@@ -62,17 +62,17 @@
       (assoc (downcase ext) b4x-project--platform-exts)
     nil))
 
-(defun b4x-project--root-of-dir (dir)
+(defun b4x-project-root-of-dir (dir)
   "If DIR is a platform folder, return its parent; else return DIR."
   (let ((base (file-name-nondirectory (directory-file-name dir))))
     (if (member base b4x-project--platform-folders)
         (file-name-directory (directory-file-name dir))
       dir)))
 
-(defun b4x-project--root-from-file (project-file)
+(defun b4x-project-root-from-file (project-file)
   "Compute the logical project root for PROJECT-FILE."
   (directory-file-name
-   (b4x-project--root-of-dir (file-name-directory project-file))))
+   (b4x-project-root-of-dir (file-name-directory project-file))))
 
 
 ;;; Header parsing
@@ -209,7 +209,7 @@ overrides the shared modules folder from the INI."
                                   (b4x-project--resolve-module
                                    spec project-dir shared-folder))
                                 module-specs)))
-         (root-dir (b4x-project--root-from-file project-file))
+         (root-dir (b4x-project-root-from-file project-file))
          (external-modules (delq nil
                                  (mapcar (lambda (m)
                                            (unless (string-prefix-p
