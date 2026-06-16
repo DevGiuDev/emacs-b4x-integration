@@ -46,11 +46,16 @@ references. ✅
 modules. ✅
 
 ## Phase 5 — Build / Run
-- [ ] `b4x-build.el` — commands wrapping the vendored scripts via `compile.el`
-- [ ] defcustoms for wine prefix, install dir, java, ports, env
-- [ ] output in compilation buffer; error regexes
+- [x] `b4x-build` / `b4x-run-project` commands wrapping the vendored scripts
+      via `compile.el` (flags-first arg order, two-arg `--flag value` form)
+- [x] defcustoms for wine prefix (auto), java opts, port
+- [x] compilation error regexp matching B4JBuilder/javac `file:line:` output
+- [x] validated end-to-end: a minimal StandardJava project builds under Wine
+      (`Completed successfully`, jar produced) and runs with native `java`
+      (`Hello from B4J via Emacs!`); Emacs wrapper emits the exact validated
+      command line
 
-**Success criterion:** compile and run a real B4J project from Emacs on Linux.
+**Success criterion:** compile and run a real B4J project from Emacs on Linux. ✅
 
 ## Phase 6 — Ergonomics
 - [ ] transient menus / `hydra`-free quick command menu

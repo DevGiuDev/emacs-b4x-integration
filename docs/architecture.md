@@ -64,11 +64,14 @@ emacs/
 ├── b4x-wine.el       ; prefix discovery, path translation, b4xV5.ini discovery
 ├── b4x-nav.el        ; xref backend + completion-at-point + imenu + eldoc
 ├── b4x-flymake.el    ; flymake diagnostics backend
-├── b4x-build.el      ; build/run via compile.el (delegates to vendored scripts)
+├── b4x-flymake.el    ; flymake diagnostics (dup symbols + type placement)
 └── scripts/
     ├── b4x-build.sh  ; vendored — wine B4JBuilder/B4ABuilder, exit parsing
     └── b4x-run.sh    ; vendored — java -jar (StandardJava) or wine java (JavaFX)
 ```
+
+Build & run commands (`b4x-build` / `b4x-run-project`) live in `b4x.el` and
+delegate to the vendored scripts via `compile.el`.
 
 ### Module responsibilities
 
@@ -108,7 +111,7 @@ emacs/
   reusing the symbol table from `b4x-nav`.
 - Runs on save / idle; cheap because the table is already built.
 
-**`b4x-build.el`** — build & run.
+**`b4x-build` / `b4x-run-project`** (in `b4x.el`) — build & run.
 
 - `b4x-build` / `b4x-run-project` commands; locate the vendored
   `scripts/b4x-{build,run}.sh` relative to the package, invoke via

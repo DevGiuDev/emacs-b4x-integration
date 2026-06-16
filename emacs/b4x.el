@@ -273,21 +273,44 @@ if you manage flymake yourself you can set this to nil."
   "Return the absolute path of vendored script NAME in the package."
   (expand-file-name name (file-name-directory (locate-library "b4x"))))
 
-(defun b4x--maybe-wine-flags ()
-  "Return a list of --wineprefix/--b4x-root flags from the active config."
-  (let ((prefix (b4x-wine-resolve-prefix))
-        (root (when (b4x-wine-active-p) (b4x-find-wine-install-dir 'b4j))))
-    (delq nil
-          (list (and (file-directory-p prefix)
-                     (format "--wineprefix=%s" prefix))
-                (and root (format "--b4x-root=%s" root))))))
+(defun b4x--maybe-wine-args ()
+  "Return a flat list of --wineprefix flag+value for the vendored scripts.
+
+We pass only the prefix; both scripts derive the B4X install root
+(`Anywhere Software') from it by default.  The scripts use the two-argument
+form (`--flag value'), not `--flag=value'."
+  (let ((prefix (b4x-wine-resolve-prefix)))
+    (if (file-directory-p prefix)
+        (list "--wineprefix" prefix)
+      nil)))
 
 (defun b4x--run-script (script args)
-  "Run SCRIPT with ARGS (a list) via `compile'."
+  "Run SCRIPT with ARGS (a flat list) via `compile'."
   (unless (file-executable-p script)
     (user-error "Script not executable: %s" script))
   (let ((cmd (mapconcat #'shell-quote-argument (cons script args) " ")))
     (compile cmd)))
+
+(defun b4x--build-command-args (proj)
+  "Return the flat arg list (flags then positional) for `b4x-build.sh'."
+  (let ((dir (b4x-project-project-dir proj))
+        (pf (b4x-project-project-file proj)))
+    ;; Flags first (--project <pf>, wine flags), then the positional project dir.
+    (append (list "--project" pf)
+            (b4x--maybe-wine-args)
+            (list dir))))
+
+(defun b4x--run-command-args (proj)
+  "Return the flat arg list (flags then positional) for `b4x-run.sh'."
+  (let ((dir (b4x-project-project-dir proj))
+        args)
+    (when b4x-build-port
+      (setq args (append args (list "--port" (number-to-string b4x-build-port)))))
+    (when b4x-java-opts
+      (setq args (append args (list "--java-opts"
+                                    (mapconcat #'identity b4x-java-opts " ")))))
+    ;; Flags first, then the positional project dir.
+    (append args (list dir))))
 
 ;;;###autoload
 (defun b4x-build ()
@@ -297,29 +320,17 @@ Both vendored scripts take host paths (the platform folder holding the .b4j)
 and convert to Wine paths internally."
   (interactive)
   (let* ((proj (b4x--current-project))
-         (script (b4x--script-path "scripts/b4x-build.sh"))
-         (dir (b4x-project-project-dir proj))
-         (pf (b4x-project-project-file proj))
-         (args (append (list dir (format "--project=%s" pf))
-                       (b4x--maybe-wine-flags))))
-    (b4x--run-script script args)))
+         (script (b4x--script-path "scripts/b4x-build.sh")))
+    (b4x--run-script script (b4x--build-command-args proj))))
 
 ;;;###autoload
 (defun b4x-run-project ()
   "Run the current B4X project's jar with the vendored `b4x-run.sh'."
   (interactive)
   (let* ((proj (b4x--current-project))
-         (script (b4x--script-path "scripts/b4x-run.sh"))
-         (dir (b4x-project-project-dir proj))
-         (extra (append (and b4x-build-port
-                             (list (format "--port=%d" b4x-build-port)))
-                        (and b4x-java-opts
-                             (list (format "--java-opts=%s"
-                                           (mapconcat #'identity
-                                                      b4x-java-opts " ")))))))
-    (b4x--run-script script (cons dir extra))))
+         (script (b4x--script-path "scripts/b4x-run.sh")))
+    (b4x--run-script script (b4x--run-command-args proj))))
 
-
 ;;; Compilation mode tweaks
 
 (with-eval-after-load 'compile

@@ -42,10 +42,11 @@ emacs-b4x-integration/
 │   ├── b4x-project.el   # .b4j/.b4a parsing, module/lib resolution, project.el
 │   ├── b4x-nav.el       # xref + capf + imenu + eldoc
 │   ├── b4x-flymake.el   # flymake diagnostics
-│   ├── b4x-build.el     # build/run via compile.el
 │   └── scripts/         # vendored b4x-build.sh / b4x-run.sh
 └── test/                # ERT tests
 ```
+
+Build & run commands live in `b4x.el` (not a separate `b4x-build.el`).
 
 ## Documentation
 
