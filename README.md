@@ -1,0 +1,59 @@
+# emacs-b4x-integration
+
+B4X (B4J / B4A) development for **Emacs on Linux**, with first-class
+[Wine](https://www.winehq.org/) support — implemented as a **pure Emacs Lisp**
+package. No Node, no LSP server, no extra runtime: just Emacs ≥ 28.
+
+It uses Emacs' native intelligence stack instead of an external language server:
+
+| Capability | Native Emacs facility |
+| --- | --- |
+| Project model | `project.el` |
+| Goto-definition / references | `xref` backend |
+| Completion | `completion-at-point` (capf) |
+| Diagnostics | `flymake` |
+| Outline / structure | `imenu` + `outline` |
+| Signature help | `eldoc` |
+| Build / run | `compile.el` |
+
+Build and run under Wine delegate to two **vendored, battle-tested shell
+scripts** shipped inside the package (`emacs/scripts/`).
+
+## Status
+
+Early — Phase 1 (Wine foundation + project model) in progress. See
+[`docs/roadmap.md`](docs/roadmap.md).
+
+MVP target: open a B4J project, get navigation/completion/diagnostics, build
+and run it — all from Emacs on a Linux box where B4X lives inside a Wine prefix.
+
+## Repository layout
+
+```
+emacs-b4x-integration/
+├── WORKPLAN.md          # goals, scope, phases
+├── docs/
+│   ├── architecture.md  # design + decisions (why pure Elisp)
+│   ├── roadmap.md       # phase checklist
+│   └── wine.md          # Wine layout & path translation notes
+├── emacs/               # the Elisp package
+│   ├── b4x.el           # entry: defcustoms, autoloads, major mode
+│   ├── b4x-wine.el      # prefix discovery, path translation, ini discovery
+│   ├── b4x-project.el   # .b4j/.b4a parsing, module/lib resolution, project.el
+│   ├── b4x-nav.el       # xref + capf + imenu + eldoc
+│   ├── b4x-flymake.el   # flymake diagnostics
+│   ├── b4x-build.el     # build/run via compile.el
+│   └── scripts/         # vendored b4x-build.sh / b4x-run.sh
+└── test/                # ERT tests
+```
+
+## Documentation
+
+- [Architecture](docs/architecture.md)
+- [Roadmap](docs/roadmap.md)
+- [Wine notes](docs/wine.md)
+- [Work plan](WORKPLAN.md)
+
+## License
+
+MIT — see [LICENSE](LICENSE).

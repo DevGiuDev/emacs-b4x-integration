@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+core/dist/
+*.js.map
+
+# Vendored LSP is committed; ignore its heavy optional deps if installed locally
+core/lsp/node_modules/
+
+# Editor / OS
+*~
+\#*\#
+.\#*
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+test/.work/
+*.log
