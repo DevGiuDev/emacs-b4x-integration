@@ -8,6 +8,8 @@
 (require 'ert)
 (require 'b4x-project)
 (require 'b4x-wine)
+(require 'b4x-nav)
+(require 'b4x)
 
 (defconst b4x-test--proyprueba
   (expand-file-name "~/dev/B4XProj/ProyPrueba/B4J/ProyPrueba.b4j")
@@ -125,3 +127,52 @@
 
 (provide 'b4x-test)
 ;;; b4x-test.el ends here
+
+
+;;; Navigation: symbol parser + table
+
+(ert-deftest b4x-nav/parse-source-subs-types-globals ()
+  (let ((syms (b4x-nav--parse-source
+               "Sub Process_Globals\n  Dim A As Int\n  Private B, C As String\nEnd Sub\n\nSub AppStart (Args() As String)\nEnd Sub\n\nPublic Sub Foo\nEnd Sub\n\nType MyType\n  X As Int\nEnd Type"
+               "/fake/mod.bas")))
+    (let ((names (mapcar #'b4x-sym-name syms))
+          (kinds (mapcar #'b4x-sym-kind syms)))
+      ;; Process_Globals is NOT indexed as a sub (it is a globals section).
+      (should-not (member "Process_Globals" names))
+      ;; AppStart and Foo are subs.
+      (should (member "AppStart" names))
+      (should (member "Foo" names))
+      (should (member 'sub kinds))
+      ;; MyType is a type.
+      (should (member "MyType" names))
+      (should (member 'type kinds))
+      ;; Globals A, B, C indexed; X (inside Type) is NOT (only globals sections).
+      (should (member "A" names))
+      (should (member "B" names))
+      (should (member "C" names))
+      (should-not (member "X" names))))
+
+  ;; Visibility detection.
+  (let ((s (car (b4x-nav--parse-source "Private Sub Secret\nEnd Sub" "/f.bas"))))
+    (should (eq (b4x-sym-visibility s) 'private))))
+
+(ert-deftest b4x-nav/table-build-and-lookup ()
+  (b4x-test-skip-unless b4x-test--proyprueba
+    (let* ((proj (b4x-load-project b4x-test--proyprueba))
+           (tab (b4x-nav-build-table proj)))
+      ;; AppStart lives in the embedded Main code (the .b4j itself).
+      (should (b4x-nav-lookup tab "AppStart"))
+      ;; A symbol declared in a resolved module should be found.
+      (should (> (length (b4x-symtab-files tab)) 0))
+      ;; Lookup is case-insensitive.
+      (should (equal (b4x-nav-lookup tab "appstart")
+                     (b4x-nav-lookup tab "AppStart"))))))
+
+(ert-deftest b4x-nav/imenu-current-buffer ()
+  (with-temp-buffer
+    (insert-file-contents b4x-test--proyprueba)
+    (b4x-mode)
+    (let ((idx (b4x-imenu-index)))
+      (should (consp idx))
+      ;; AppStart is a Sub in the project file's Main code.
+      (should (member "Subs" (mapcar #'car idx))))))

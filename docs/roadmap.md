@@ -19,22 +19,22 @@ Status is updated as work lands.
 correct modules, libraries, and host paths. ✅
 
 ## Phase 2 — Emacs basics
-- [ ] `b4x.el` — package header, defcustoms, autoloads, derived major mode
-- [ ] `project.el` integration (project finder + project roots)
-- [ ] B4X major mode: font-lock, syntax table, imenu
-- [ ] `b4x-open-project` interactive command
+- [x] `b4x.el` — package header, defcustoms, autoloads, derived major mode
+- [x] `project.el` integration (project finder + project roots)
+- [x] B4X major mode: font-lock, syntax table, imenu
+- [x] `b4x-open-project` / `b4x-project-info` interactive commands
 
-**Success criterion:** load a B4J project from Emacs and inspect its metadata.
+**Success criterion:** load a B4J project from Emacs and inspect its metadata. ✅
 
 ## Phase 3 — Navigation & intelligence
-- [ ] `b4x-nav.el` — symbol table builder (scan resolved modules)
-- [ ] xref backend: definitions + references for subs/types/globals
-- [ ] `completion-at-point` (symbols + keywords)
-- [ ] `imenu` + `outline`
-- [ ] `eldoc` sub signatures
+- [x] `b4x-nav.el` — symbol table builder (scan resolved modules + main code)
+- [x] xref backend: definitions + references for subs/types/globals
+- [x] `completion-at-point` (symbols + keywords)
+- [x] `imenu` + `outline` + `which-function` (current sub)
+- [x] `eldoc` sub signatures
 
 **Success criterion:** open a `.bas`/`.b4j` and get goto-def, completion,
-references.
+references. ✅
 
 ## Phase 4 — Diagnostics
 - [ ] `b4x-flymake.el` — duplicate-symbol detection across modules
