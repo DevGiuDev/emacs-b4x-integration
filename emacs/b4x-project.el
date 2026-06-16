@@ -278,5 +278,60 @@ Keys: `libraries-folder', `additional-libraries-folder',
                   (push (cons key val) entries))))))))
     (nreverse entries)))
 
+
+;;; Layouts & Files
+
+(defconst b4x-project--layout-exts
+  '((b4j . "bjl") (b4a . "bal") (b4i . "bil"))
+  "Layout-file extension per B4X platform (B4R has no layouts).")
+
+(defun b4x-project-layout-ext (project)
+  "Return the layout file extension for PROJECT's platform (without dot)."
+  (cdr (assq (b4x-project-platform project) b4x-project--layout-exts)))
+
+(defun b4x-project-files-dir (project)
+  "Return the `Files/' directory of PROJECT's platform folder, or nil."
+  (let ((dir (expand-file-name "Files" (b4x-project-project-dir project))))
+    (and (file-directory-p dir) dir)))
+
+(defun b4x-project-layout-files (project)
+  "Return a list of (NAME . PATH) for layout files of PROJECT.
+
+NAME is the layout name without extension (as referenced by
+`LoadLayout').  PATH is the absolute host path.  Sources: the
+`FileN=' header entries plus any `.<ext>' file found in the
+platform `Files/' directory on disk."
+  (let* ((ext (b4x-project-layout-ext project))
+         (files-dir (b4x-project-files-dir project))
+         (result (make-hash-table :test 'equal)))
+    ;; From header FileN= entries (e.g. "MainPage.bjl").
+    (dolist (raw (b4x-project--collect-numbered
+                  "File" (b4x-project-header project)))
+      (when (and ext (string-match (concat (regexp-quote ext) "\\'") raw))
+        (let* ((name (file-name-base raw))
+               (path (and files-dir
+                          (expand-file-name raw files-dir))))
+          (when (or (null path) (file-regular-p path))
+            (puthash name (or path name) result)))))
+    ;; From disk (covers layouts not listed in the header, or missing ext).
+    (when files-dir
+      (dolist (f (directory-files
+                  files-dir t
+                  (concat "\\." (or ext "\\(bjl\\|bal\\|bil\\)") "\\'") t))
+        (puthash (file-name-base f) f result)))
+    (let (out)
+      (maphash (lambda (k v) (push (cons k v) out)) result)
+      (sort out (lambda (a b) (string< (car a) (car b)))))))
+
+(defun b4x-project-find-layout (project name)
+  "Return the host path of layout NAME in PROJECT, or nil.
+
+NAME is matched case-insensitively against declared/disk layouts."
+  (let ((target (downcase name)))
+    (cl-some (lambda (entry)
+               (when (string= (downcase (car entry)) target)
+                 (cdr entry)))
+             (b4x-project-layout-files project))))
+
 (provide 'b4x-project)
 ;;; b4x-project.el ends here

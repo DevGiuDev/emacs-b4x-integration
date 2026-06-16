@@ -58,9 +58,17 @@ modules. ✅
 **Success criterion:** compile and run a real B4J project from Emacs on Linux. ✅
 
 ## Phase 6 — Ergonomics
-- [ ] transient menus / `hydra`-free quick command menu
-- [ ] jump to `.bal`/`.bjl` layouts from `LoadLayout("...")`
-- [ ] module switcher
+- [x] jump to `.bal`/`.bjl` layouts from `LoadLayout("...")` (case-insensitive;
+      resolves via header `FileN=` entries + `Files/` dir scan, platform-aware
+      extension: `.bjl`/`.bal`/`.bil`)
+- [x] module switcher (`b4x-switch-module`, completing-read over project modules)
+- [x] transient dispatch menu (`b4x-dispatch`, no extra deps)
+- [x] keymap: C-c C-d dispatch, C-c C-l layout, C-c C-m module, C-c C-c build,
+      C-c C-r run, C-c C-o open, C-c C-i info
+- [x] fixed latent bug in project-file walk-up (misplaced `cl-return')
+
+**Success criterion:** fast ergonomic navigation between code, modules, and
+layouts. ✅
 
 ## Phase 7 — B4A
 - [ ] B4A config + build under Wine

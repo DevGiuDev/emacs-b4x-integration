@@ -21,11 +21,14 @@ scripts** shipped inside the package (`emacs/scripts/`).
 
 ## Status
 
-Early — Phase 1 (Wine foundation + project model) in progress. See
-[`docs/roadmap.md`](docs/roadmap.md).
+Phases 0–6 complete (pure-Elisp package, Linux/Wine first). See
+[`docs/roadmap.md`](docs/roadmap.md): Wine path translation, project model,
+major mode with native xref/capf/imenu/eldoc, flymake diagnostics, build/run
+under Wine, plus ergonomics (layout jump, module switcher, dispatch menu).
 
-MVP target: open a B4J project, get navigation/completion/diagnostics, build
-and run it — all from Emacs on a Linux box where B4X lives inside a Wine prefix.
+MVP target achieved: open a B4J project, get navigation/completion/diagnostics,
+build and run it — all from Emacs on a Linux box where B4X lives inside a Wine
+prefix. Remaining: B4A polish (Phase 7) and designer (Phase 8).
 
 ## Repository layout
 

@@ -23,6 +23,16 @@
 ;; completion-at-point, xref goto-definition/references, and eldoc.  Use
 ;; `b4x-build' / `b4x-run-project' to compile and run (delegated to the
 ;; vendored Wine shell scripts).
+;;
+;; Key bindings in `b4x-mode':
+;;
+;;   C-c C-d   dispatch menu (transient)
+;;   C-c C-o   open project
+;;   C-c C-i   project info
+;;   C-c C-m   switch module
+;;   C-c C-l   jump to layout (from `LoadLayout("...")' or via completion)
+;;   C-c C-c   build
+;;   C-c C-r   run
 
 ;;; Code:
 
@@ -30,6 +40,7 @@
 (require 'subr-x)
 (require 'seq)
 (require 'project)
+(require 'transient)
 (require 'b4x-wine)
 (require 'b4x-project)
 (require 'b4x-nav)
@@ -135,6 +146,9 @@ if you manage flymake yourself you can set this to nil."
     (define-key map (kbd "C-c C-r") #'b4x-run-project)
     (define-key map (kbd "C-c C-o") #'b4x-open-project)
     (define-key map (kbd "C-c C-i") #'b4x-project-info)
+    (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
+    (define-key map (kbd "C-c C-m") #'b4x-switch-module)
+    (define-key map (kbd "C-c C-d") #'b4x-dispatch)
     map)
   "Keymap for `b4x-mode'.")
 
@@ -330,6 +344,98 @@ and convert to Wine paths internally."
   (let* ((proj (b4x--current-project))
          (script (b4x--script-path "scripts/b4x-run.sh")))
     (b4x--run-script script (b4x--run-command-args proj))))
+
+;;; Layout & module navigation
+
+;;;###autoload
+(defun b4x-goto-layout (name)
+  "Jump to the layout file referenced by NAME (or at point).
+
+Recognizes `LoadLayout(\"NAME\")' on the current line; if point is on a
+string or symbol matching a layout, uses it.  Otherwise prompts with
+the project's known layouts for completion."
+  (interactive
+   (list (or (b4x--layout-name-at-point)
+             (let ((proj (b4x--current-project)))
+               (b4x--read-layout proj)))))
+  (let* ((proj (b4x--current-project))
+         (path (b4x-project-find-layout proj name)))
+    (if path
+        (find-file path)
+      (user-error "Layout '%s' not found in %s" name
+                  (b4x-project-project-file proj)))))
+
+(defun b4x--layout-name-at-point ()
+  "Return a layout name referenced on the current line, or nil.
+
+Handles `LoadLayout(\"X\")', `XUI.LoadLayout(...)', and a bare string/symbol
+at point that matches a declared layout."
+  (let ((line (buffer-substring-no-properties
+               (line-beginning-position) (line-end-position))))
+    (cond
+     ;; LoadLayout("Name") anywhere on the line.
+     ((string-match (rx "LoadLayout" (* space) "("
+                        (* space) "\"" (group (+ (not (any "\"")))) "\"")
+                    line)
+      (match-string 1 line))
+     ;; Point inside a quoted string matching a layout.
+     ((and (nth 3 (syntax-ppss))
+           (bounds-of-thing-at-point 'word))
+      (let ((w (thing-at-point 'word t)))
+        (when (b4x--known-layout-p w) w))))))
+
+(defun b4x--known-layout-p (name)
+  "Non-nil if NAME matches a layout in the current project."
+  (and name
+       (let ((proj (b4x-nav-current-project)))
+         (and proj (b4x-project-find-layout proj name)))))
+
+(defun b4x--read-layout (project)
+  "Read a layout name from PROJECT's layouts, with completion."
+  (let* ((layouts (b4x-project-layout-files project))
+         (names (mapcar #'car layouts)))
+    (if (null names)
+        (user-error "No layout files found for %s"
+                    (b4x-project-project-file project))
+      (completing-read "Layout: " names nil t))))
+
+;;;###autoload
+(defun b4x-switch-module ()
+  "Switch to another module of the current B4X project."
+  (interactive)
+  (let* ((proj (b4x--current-project))
+         (current (buffer-file-name))
+         ;; Include the project file itself alongside its modules.
+         (candidates (cons (cons (format "%s (project file)"
+                                         (file-name-nondirectory
+                                          (b4x-project-project-file proj)))
+                                 (b4x-project-project-file proj))
+                           (mapcar (lambda (m)
+                                     (cons (file-name-nondirectory m) m))
+                                   (b4x-project-modules proj))))
+         (choice (completing-read
+                  "Module: "
+                  (lambda (string pred action)
+                    (complete-with-action action candidates string pred))
+                  nil t nil nil
+                  (and current
+                       (or (car (rassoc current candidates))
+                           (file-name-nondirectory current))))))
+    (find-file (cdr (assoc choice candidates)))))
+
+;;; Dispatch menu (transient)
+
+;;;###autoload
+(transient-define-prefix b4x-dispatch ()
+  "B4X dispatch menu."
+  [["Project"
+    ("o" "Open project"       b4x-open-project)
+    ("i" "Project info"        b4x-project-info)
+    ("m" "Switch module"       b4x-switch-module)
+    ("l" "Jump to layout"      b4x-goto-layout)]
+   ["Build & Run"
+    ("c" "Build"               b4x-build)
+    ("r" "Run"                 b4x-run-project)]])
 
 ;;; Compilation mode tweaks
 

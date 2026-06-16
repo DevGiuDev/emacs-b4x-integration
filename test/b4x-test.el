@@ -239,3 +239,52 @@
                 "\n")))
     ;; `Type T' on line 4, no globals header within lookback -> outside.
     (should-not (b4x-flymake--inside-globals-p 4 lines))))
+
+
+;;; Layouts & Files
+
+(ert-deftest b4x-project/layout-ext-per-platform ()
+  ;; Pure: construct a minimal project to test the extension mapping.
+  (let ((b4j (make-b4x-project :platform 'b4j))
+        (b4a (make-b4x-project :platform 'b4a))
+        (b4i (make-b4x-project :platform 'b4i))
+        (b4r (make-b4x-project :platform 'b4r)))
+    (should (equal (b4x-project-layout-ext b4j) "bjl"))
+    (should (equal (b4x-project-layout-ext b4a) "bal"))
+    (should (equal (b4x-project-layout-ext b4i) "bil"))
+    (should (equal (b4x-project-layout-ext b4r) nil))))
+
+(ert-deftest b4x-project/proyprueba-layouts ()
+  (b4x-test-skip-unless b4x-test--proyprueba
+    (let* ((proj (b4x-load-project b4x-test--proyprueba))
+           (layouts (b4x-project-layout-files proj)))
+      ;; Header declares File1=MainPage.bjl -> MainPage resolved on disk.
+      (should (assoc "MainPage" layouts))
+      (should (file-regular-p (cdr (assoc "MainPage" layouts))))
+      ;; Case-insensitive lookup.
+      (should (b4x-project-find-layout proj "mainpage"))
+      ;; A non-existent layout resolves to nil.
+      (should-not (b4x-project-find-layout proj "DoesNotExist")))))
+
+(ert-deftest b4x-project/proyectopages-multiple-layouts ()
+  (let ((pf (expand-file-name "~/dev/B4XProj/ProyectoPages/B4J/ProyectoPages.b4j")))
+    (b4x-test-skip-unless pf
+      (let* ((proj (b4x-load-project pf))
+             (names (mapcar #'car (b4x-project-layout-files proj))))
+        (should (member "MainPage" names))
+        (should (member "OtraPaginaMas" names))))))
+
+
+;;; Layout name detection from source
+
+(ert-deftest b4x-layout-name-from-loadlayout ()
+  (cl-letf (((symbol-function 'b4x--known-layout-p)
+             (lambda (n) (member n '("MainPage" "Other")))))
+    (with-temp-buffer
+      (b4x-mode)
+      (insert "Sub B4XPage_Created (Root1 As B4XView)\n"
+              "\tRoot1.LoadLayout(\"MainPage\")\n"
+              "End Sub\n")
+      (goto-char (point-min))
+      (re-search-forward "LoadLayout")
+      (should (equal (b4x--layout-name-at-point) "MainPage")))))

@@ -198,8 +198,9 @@ platform subfolder)."
               (dolist (f (directory-files d t "\\`[^.].*\\.b4[aijr]\\'" t))
                 (throw 'found f)))))
         (let ((parent (file-name-directory (directory-file-name dir))))
-          (when (or (null parent) (string= parent dir)) (cl-return nil))
-          (setq dir (directory-file-name parent))))
+          (if (or (null parent) (string= parent dir))
+              (setq dir nil)
+            (setq dir (directory-file-name parent)))))
       nil)))
 
 (defun b4x-nav-table (&optional no-cache)
