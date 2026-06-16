@@ -33,6 +33,7 @@
 (require 'b4x-wine)
 (require 'b4x-project)
 (require 'b4x-nav)
+(require 'b4x-flymake)
 
 
 ;;; Customization
@@ -61,6 +62,14 @@
   "Extra JVM options passed when running a B4J jar."
   :group 'b4x
   :type '(repeat string))
+
+(defcustom b4x-enable-flymake t
+  "If non-nil, enable `flymake-mode' in `b4x-mode' buffers.
+
+The B4X diagnostic backend (`b4x-flymake') is registered regardless, so
+if you manage flymake yourself you can set this to nil."
+  :group 'b4x
+  :type 'boolean)
 
 
 ;;; Faces
@@ -148,6 +157,9 @@
   (add-hook 'completion-at-point-functions #'b4x-completion-at-point nil t)
   (add-hook 'eldoc-documentation-functions #'b4x-eldoc-function nil t)
   (add-hook 'xref-backend-functions #'b4x--xref-backend nil t)
+  (add-hook 'flymake-diagnostic-functions #'b4x-flymake nil t)
+  (when (and b4x-enable-flymake (not flymake-mode))
+    (flymake-mode 1))
   (add-hook 'after-save-hook #'b4x-nav--clear-cache nil t))
 
 (defun b4x--current-sub ()

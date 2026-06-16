@@ -9,6 +9,7 @@
 (require 'b4x-project)
 (require 'b4x-wine)
 (require 'b4x-nav)
+(require 'b4x-flymake)
 (require 'b4x)
 
 (defconst b4x-test--proyprueba
@@ -176,3 +177,65 @@
       (should (consp idx))
       ;; AppStart is a Sub in the project file's Main code.
       (should (member "Subs" (mapcar #'car idx))))))
+
+
+;;; Flymake: duplicate-symbol + type-placement (pure logic)
+
+(defun b4x-test--symtab (syms)
+  "Build a `b4x-symtab' containing SYMS."
+  (let ((tab (make-b4x-symtab)))
+    (dolist (s syms) (b4x-nav--add-sym tab s))
+    tab))
+
+(ert-deftest b4x-flymake/duplicate-across-files ()
+  ;; `Foo' exists in THIS file and in another module -> duplicate.
+  (let* ((this "/proj/Main.bas")
+         (live (list (make-b4x-sym :name "Foo" :kind 'sub :file this :line 5
+                                   :visibility 'default)))
+         (disk (b4x-test--symtab
+                (list (make-b4x-sym :name "Foo" :kind 'sub
+                                    :file "/proj/Other.bas" :line 9
+                                    :visibility 'default)
+                      (make-b4x-sym :name "Foo" :kind 'sub :file this :line 5
+                                    :visibility 'default)))))
+    (should (equal (list "/proj/Other.bas")
+                   (mapcar #'b4x-sym-file
+                           (b4x-flymake--foreign-dups (car live) this disk))))))
+
+(ert-deftest b4x-flymake/private-sub-not-flagged ()
+  ;; A Private Sub sharing a name with another file is intentionally ignored.
+  ;; The skip happens at `b4x-flymake--dup-diagnostics' (the live symbol is
+  ;; private); `foreign-dups' only filters OTHER private subs.
+  (let* ((this "/proj/Main.bas")
+         (live (list (make-b4x-sym :name "Helper" :kind 'sub :file this :line 3
+                                   :visibility 'private)))
+         (disk (b4x-test--symtab
+                (list (make-b4x-sym :name "Helper" :kind 'sub
+                                    :file "/proj/Other.bas" :line 1
+                                    :visibility 'default)))))
+    (should (b4x-flymake--private-sub-p (car live)))
+    ;; No diagnostics are produced for a private live symbol.
+    (should (null (b4x-flymake--dup-diagnostics live this disk)))))
+
+(ert-deftest b4x-flymake/unique-symbol-not-flagged ()
+  (let* ((this "/proj/Main.bas")
+         (live (list (make-b4x-sym :name "Bar" :kind 'sub :file this :line 1
+                                   :visibility 'default)))
+         (disk (b4x-test--symtab
+                (list (make-b4x-sym :name "Bar" :kind 'sub :file this :line 1
+                                    :visibility 'default)))))
+    (should-not (b4x-flymake--foreign-dups (car live) this disk))))
+
+(ert-deftest b4x-flymake/type-inside-globals-ok ()
+  (let ((lines (split-string
+                "Sub Class_Globals\n  Type T\n    X As Int\n  End Type\nEnd Sub"
+                "\n")))
+    ;; `Type T' on line 2, Class_Globals header on line 1 -> inside.
+    (should (b4x-flymake--inside-globals-p 2 lines))))
+
+(ert-deftest b4x-flymake/type-outside-globals-flagged ()
+  (let ((lines (split-string
+                "Sub AppStart\nEnd Sub\n\nType T\n  X As Int\nEnd Type"
+                "\n")))
+    ;; `Type T' on line 4, no globals header within lookback -> outside.
+    (should-not (b4x-flymake--inside-globals-p 4 lines))))

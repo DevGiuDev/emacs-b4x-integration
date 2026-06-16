@@ -37,10 +37,13 @@ correct modules, libraries, and host paths. ✅
 references. ✅
 
 ## Phase 4 — Diagnostics
-- [ ] `b4x-flymake.el` — duplicate-symbol detection across modules
-- [ ] reuses the symbol table from `b4x-nav`
+- [x] `b4x-flymake.el` — duplicate-symbol detection across modules +
+      type-placement heuristic
+- [x] reuses the symbol table from `b4x-nav`; current buffer parsed live
+- [x] wired into `b4x-mode' (flymake on by default via `b4x-enable-flymake')
 
-**Success criterion:** warnings appear for symbols defined in multiple modules.
+**Success criterion:** warnings appear for symbols defined in multiple
+modules. ✅
 
 ## Phase 5 — Build / Run
 - [ ] `b4x-build.el` — commands wrapping the vendored scripts via `compile.el`
