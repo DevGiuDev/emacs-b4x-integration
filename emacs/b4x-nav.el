@@ -345,8 +345,19 @@ imenu is per-buffer; this indexes only the file currently visited."
 
 ;;; eldoc
 
-(defun b4x-eldoc-function ()
-  "Return an eldoc string for the Sub at point, or nil."
+(defun b4x-eldoc-function (&optional callback)
+  "Eldoc backend: show the signature of the Sub at point, or nil.
+
+Follows the `eldoc-documentation-functions' protocol (Emacs 28+): when
+CALLBACK is passed we call it with the docstring; otherwise we return the
+string (for older callers)."
+  (when-let ((doc (b4x-eldoc--sub-string)))
+    (if callback
+        (funcall callback doc :thing (b4x-nav--symbol-at-point))
+      doc)))
+
+(defun b4x-eldoc--sub-string ()
+  "Return the signature string of the Sub at point, or nil."
   (when-let ((name (b4x-nav--symbol-at-point)))
     (when-let ((tab (b4x-nav-table)))
       (when-let ((syms (b4x-nav-lookup tab name)))
