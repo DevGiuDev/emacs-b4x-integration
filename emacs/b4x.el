@@ -327,10 +327,47 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
       (display-buffer (current-buffer)))))
 
 (defconst b4x--new-module-kinds
-  '((static . "Static Code")
-    (class . "Class")
-    (b4xpage . "B4XPage"))
+  '((static . (:label "Static Code"
+               :platforms (b4j b4a)
+               :module-type "StaticCode"
+               :placement shared))
+    (class . (:label "Class"
+              :platforms (b4j b4a)
+              :module-type "Class"
+              :placement shared))
+    (b4xpage . (:label "B4XPage"
+                :platforms (b4j b4a)
+                :module-type "Class"
+                :placement shared
+                :needs-library "b4xpages"))
+    (service . (:label "Service"
+                :platforms (b4a)
+                :module-type "Service"
+                :placement local)))
   "Kinds supported by `b4x-new-module'.")
+
+(defun b4x--module-kind-prop (kind prop)
+  "Return PROP from KIND's spec in `b4x--new-module-kinds'."
+  (plist-get (cdr (assq kind b4x--new-module-kinds)) prop))
+
+(defun b4x--module-kind-label (kind)
+  "Return the human label for KIND."
+  (or (b4x--module-kind-prop kind :label)
+      (symbol-name kind)))
+
+(defun b4x--module-kind-supported-p (kind platform)
+  "Return non-nil when KIND is supported for PLATFORM."
+  (memq platform (b4x--module-kind-prop kind :platforms)))
+
+(defun b4x--module-kind-choices (proj)
+  "Return `(LABEL . KIND)' choices valid for PROJ."
+  (let ((platform (b4x-project-platform proj)))
+    (delq nil
+          (mapcar (lambda (it)
+                    (let ((kind (car it)))
+                      (when (b4x--module-kind-supported-p kind platform)
+                        (cons (b4x--module-kind-label kind) kind))))
+                  b4x--new-module-kinds))))
 
 (defun b4x--module-name-p (name)
   "Return non-nil if NAME is a valid B4X module identifier." 
@@ -445,12 +482,17 @@ Keys: `:bom', `:newline', `:header', `:main'."
                        (b4x-project-version proj)
                        "10.5"))))
 
-(defun b4x--module-target (proj name)
-  "Return (FILE . MODULE-SPEC) for a new module NAME in PROJ." 
-  (let* ((target-dir (if (equal (b4x-project-project-dir proj)
-                                (b4x-project-root-dir proj))
-                         (b4x-project-project-dir proj)
-                       (b4x-project-root-dir proj)))
+(defun b4x--module-target (proj name placement)
+  "Return (FILE . MODULE-SPEC) for a new module NAME in PROJ at PLACEMENT.
+
+PLACEMENT is either `shared' (project root when distinct from the platform
+folder) or `local' (the platform folder itself)."
+  (let* ((target-dir (pcase placement
+                       ('local (b4x-project-project-dir proj))
+                       (_ (if (equal (b4x-project-project-dir proj)
+                                      (b4x-project-root-dir proj))
+                              (b4x-project-project-dir proj)
+                            (b4x-project-root-dir proj)))))
          (file (expand-file-name (concat name ".bas") target-dir)))
     (cons file
           (if (equal target-dir (b4x-project-project-dir proj))
@@ -462,15 +504,13 @@ Keys: `:bom', `:newline', `:header', `:main'."
                                      (b4x-project-project-dir proj))))))))
 
 (defun b4x--module-template (proj kind name newline)
-  "Return the source text for a new module of KIND/NAME in PROJ." 
+  "Return the source text for a new module of KIND/NAME in PROJ."
   (pcase-let* ((defaults (b4x--module-header-defaults proj))
                (platform-key (plist-get defaults :platform-key))
                (group (plist-get defaults :group))
                (msv (plist-get defaults :modules-structure-version))
                (version (plist-get defaults :version))
-               (type (pcase kind
-                       ('static "StaticCode")
-                       (_ "Class")))
+               (type (or (b4x--module-kind-prop kind :module-type) "Class"))
                (header (list (format "%s=true" platform-key)
                              (format "Group=%s" group)
                              (format "ModulesStructureVersion=%s" msv)
@@ -500,6 +540,26 @@ Keys: `:bom', `:newline', `:header', `:main'."
                      "Public Sub Initialize"
                      "End Sub")
                    newline))
+       ('service
+        (mapconcat #'identity
+                   '(""
+                     "#Region  Service Attributes"
+                     "\t#StartAtBoot: False"
+                     "\t#ExcludeFromLibrary: True"
+                     "#End Region"
+                     ""
+                     "Sub Process_Globals"
+                     "End Sub"
+                     ""
+                     "Sub Service_Create"
+                     "End Sub"
+                     ""
+                     "Sub Service_Start (StartingIntent As Intent)"
+                     "End Sub"
+                     ""
+                     "Sub Service_Destroy"
+                     "End Sub")
+                   newline))
        ('b4xpage
         (mapconcat #'identity
                    (list ""
@@ -523,26 +583,33 @@ Keys: `:bom', `:newline', `:header', `:main'."
 (defun b4x--create-module (proj kind name)
   "Create a new B4X module of KIND and NAME inside PROJ.
 
-Returns the absolute path of the new `.bas' file.  KIND is one of
-`static', `class' or `b4xpage'."
-  (unless (eq (b4x-project-platform proj) 'b4j)
-    (user-error "`b4x-new-module' currently supports only B4J projects"))
+Supports B4J and B4A projects.  Returns the absolute path of the new `.bas'
+file."
+  (unless (memq (b4x-project-platform proj) '(b4j b4a))
+    (user-error "`b4x-new-module' currently supports only B4J/B4A projects"))
+  (unless (b4x--module-kind-supported-p kind (b4x-project-platform proj))
+    (user-error "%s modules are not supported for %s"
+                (b4x--module-kind-label kind)
+                (b4x-project-platform proj)))
   (unless (b4x--module-name-p name)
     (user-error "Invalid B4X module name: %s" name))
   (when (and (eq kind 'b4xpage)
+             (eq (b4x-project-platform proj) 'b4j)
              (not (string= (or (b4x-project-app-type proj) "") "JavaFX")))
     (user-error "B4XPage modules require a B4J JavaFX project"))
   (pcase-let* ((project-file (b4x-project-project-file proj))
                (`(:bom ,bom :newline ,newline :header ,header :main ,main)
                 (b4x--project-file-components project-file))
-               (`(,target-file . ,module-spec) (b4x--module-target proj name)))
+               (`(,target-file . ,module-spec)
+                (b4x--module-target proj name (b4x--module-kind-prop kind :placement)))
+               (needed-lib (b4x--module-kind-prop kind :needs-library)))
     (b4x--ensure-clean-visiting-buffer project-file)
     (when (file-exists-p target-file)
       (user-error "Module already exists: %s" target-file))
     (setq header (b4x--header-add-numbered "Module" module-spec header "NumberOfModules"))
-    (when (and (eq kind 'b4xpage)
-               (not (b4x--header-has-numbered-value "Library" "b4xpages" header)))
-      (setq header (b4x--header-add-numbered "Library" "b4xpages" header "NumberOfLibraries")))
+    (when (and needed-lib
+               (not (b4x--header-has-numbered-value "Library" needed-lib header)))
+      (setq header (b4x--header-add-numbered "Library" needed-lib header "NumberOfLibraries")))
     (setq header (b4x--header-set "NumberOfModules"
                                   (number-to-string
                                    (length (b4x-project--collect-numbered "Module" header)))
@@ -557,24 +624,25 @@ Returns the absolute path of the new `.bas' file.  KIND is one of
     (b4x-nav--clear-cache)
     target-file))
 
-(defun b4x--read-module-kind ()
-  "Prompt for a new-module kind and return its symbol." 
-  (let* ((choices (mapcar (lambda (it) (cons (cdr it) (car it))) b4x--new-module-kinds))
+(defun b4x--read-module-kind (proj)
+  "Prompt for a new-module kind valid for PROJ and return its symbol."
+  (let* ((choices (b4x--module-kind-choices proj))
          (pick (completing-read "New module kind: " choices nil t)))
     (cdr (assoc pick choices))))
 
 ;;;###autoload
 (defun b4x-new-module (kind name)
-  "Create a new module NAME of KIND in the current B4J project." 
+  "Create a new module NAME of KIND in the current B4J or B4A project."
   (interactive
-   (list (b4x--read-module-kind)
-         (read-string "New module name: ")))
+   (let ((proj (b4x--current-project)))
+     (list (b4x--read-module-kind proj)
+           (read-string "New module name: "))))
   (let* ((proj (b4x--current-project))
          (path (b4x--create-module proj kind name)))
     (find-file path)
     (message "B4X: created %s (%s)%s"
              (file-name-nondirectory path)
-             (cdr (assq kind b4x--new-module-kinds))
+             (b4x--module-kind-label kind)
              (if (eq kind 'b4xpage)
                  " — uncomment/create the layout when ready"
                ""))))
@@ -629,8 +697,8 @@ form (`--flag value'), not `--flag=value'."
 (defun b4x-build ()
   "Build the current B4X project with the vendored `b4x-build.sh'.
 
-Both vendored scripts take host paths (the platform folder holding the .b4j)
-and convert to Wine paths internally."
+The vendored script takes host paths (the platform folder holding the
+`.b4j'/`.b4a') and converts to Wine paths internally."
   (interactive)
   (let* ((proj (b4x--current-project))
          (script (b4x--script-path "scripts/b4x-build.sh")))
@@ -642,6 +710,8 @@ and convert to Wine paths internally."
   (interactive)
   (let* ((proj (b4x--current-project))
          (script (b4x--script-path "scripts/b4x-run.sh")))
+    (unless (eq (b4x-project-platform proj) 'b4j)
+      (user-error "`b4x-run-project' currently supports only B4J jars; use `b4x-build' / `b4x-open-in-ide' for B4A"))
     (b4x--run-script script (b4x--run-command-args proj))))
 
 

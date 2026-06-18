@@ -30,7 +30,7 @@ dispatch menu).
 
 MVP target achieved: open a B4J project, get navigation/completion/diagnostics,
 build, run, and hop into the official IDE — all from Emacs on a Linux box where
-B4X lives inside a Wine prefix. Remaining: B4A polish (Phase 7) and designer
+B4X lives inside a Wine prefix. Remaining: deeper B4A/device workflow polish (Phase 7) and designer
 (Phase 8).
 
 ---
@@ -172,7 +172,7 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | `C-c C-o` | `b4x-open-project` | Load a project (auto-detected or prompted). |
 | `C-c C-i` | `b4x-project-info` | Show modules, libraries, INI, root in a buffer. |
 | `C-c C-v` | `b4x-version` | Show the loaded package version and the exact file path Emacs is executing. |
-| `C-c C-n` | `b4x-new-module` | Create a new B4J module (`Static Code`, `Class`, `B4XPage`) and register it in the `.b4j`. |
+| `C-c C-n` | `b4x-new-module` | Create/register a new module in the current B4J/B4A project (`Static Code`, `Class`, `B4XPage`; plus `Service` on B4A). |
 | `C-c C-m` | `b4x-switch-module` | Jump to another module (completing-read). |
 
 ### Navigation & intelligence (native Emacs)
@@ -197,7 +197,7 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | Key | Command | Description |
 | --- | --- | --- |
 | `C-c C-c` | `b4x-build` | Build with `wine B4JBuilder.exe`/`B4ABuilder.exe` (the builder itself handles code generation + Java compilation internally). |
-| `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX). |
+| `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX) for B4J projects. |
 | `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
 | `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |
 

@@ -436,3 +436,79 @@
             (should (string-match-p "B4XPage_Created" module-text))
             (should (string-match-p "Root.LoadLayout(\\\"SettingsPage\\\")" module-text))))
       (delete-directory root t))))
+
+(ert-deftest b4x-new-module/b4a-b4xpage-in-shared-root ()
+  (let* ((root (make-temp-file "b4x-newmod-b4a-root-" t))
+         (platform-dir (expand-file-name "B4A" root))
+         (project-file (expand-file-name "Demo.b4a" platform-dir))
+         (module-file (expand-file-name "SharedPage.bas" root)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("Build1=Default,demo.app"
+                        "Group=Default Group"
+                        "Library1=core"
+                        "NumberOfFiles=0"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=9.9"
+                        "@EndOfDesignText@"
+                        "Sub Process_Globals"
+                        "End Sub")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file))
+                 (created (b4x--create-module proj 'b4xpage "SharedPage"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string)))
+                 (module-text (with-temp-buffer
+                                (insert-file-contents module-file)
+                                (buffer-string))))
+            (should (equal created module-file))
+            (should (string-match-p (regexp-quote "Module1=|relative|..\\SharedPage")
+                                    project-text))
+            (should (string-match-p "Library2=b4xpages" project-text))
+            (should (string-match-p "NumberOfLibraries=2" project-text))
+            (should (string-match-p "B4A=true" module-text))
+            (should (string-match-p "B4XPage_Created" module-text))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-new-module/b4a-service-in-platform-dir ()
+  (let* ((root (make-temp-file "b4x-newmod-b4a-service-" t))
+         (platform-dir (expand-file-name "B4A" root))
+         (project-file (expand-file-name "Demo.b4a" platform-dir))
+         (module-file (expand-file-name "SyncService.bas" platform-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("Build1=Default,demo.app"
+                        "Group=Default Group"
+                        "Library1=core"
+                        "NumberOfFiles=0"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=9.9"
+                        "@EndOfDesignText@"
+                        "Sub Process_Globals"
+                        "End Sub")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file))
+                 (created (b4x--create-module proj 'service "SyncService"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string)))
+                 (module-text (with-temp-buffer
+                                (insert-file-contents module-file)
+                                (buffer-string))))
+            (should (equal created module-file))
+            (should (string-match-p "Module1=SyncService" project-text))
+            (should (string-match-p "Type=Service" module-text))
+            (should (string-match-p "Sub Service_Start (StartingIntent As Intent)"
+                                    module-text))))
+      (delete-directory root t))))
