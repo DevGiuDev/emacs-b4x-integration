@@ -1,5 +1,23 @@
 # emacs-b4x-integration (WIP)
 
+> **WIP / current status**
+>
+> This extension is under active development. At the moment it is already
+> usable for **B4J** and **B4A** work from Emacs on Linux:
+>
+> - opening and detecting B4X projects
+> - navigating across modules and layouts
+> - building under Wine
+> - opening the official IDE (`B4J.exe` / `B4A.exe`)
+> - Android-side helpers for B4A (`adb`, emulator, APK install, logcat)
+>
+> However, some areas are still evolving and may change:
+>
+> - the B4A debugging flow
+> - multi-device / multi-emulator integration
+> - Designer / complex layout polish
+> - general UX and automation commands
+>
 B4X (B4J / B4A) development for **Emacs on Linux**, with first-class
 [Wine](https://www.winehq.org/) support — implemented as a **pure Emacs Lisp**
 package. No Node, no LSP server, no extra runtime: just Emacs ≥ 28.
