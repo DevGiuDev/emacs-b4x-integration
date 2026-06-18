@@ -1,4 +1,4 @@
-# emacs-b4x-integration
+# emacs-b4x-integration (WIP)
 
 B4X (B4J / B4A) development for **Emacs on Linux**, with first-class
 [Wine](https://www.winehq.org/) support — implemented as a **pure Emacs Lisp**
@@ -30,9 +30,11 @@ dispatch menu).
 
 MVP target achieved: open a B4J project, get navigation/completion/diagnostics,
 build, run, and hop into the official IDE — all from Emacs on a Linux box where
-B4X lives inside a Wine prefix. Phase 7 now includes first Android deployment helpers (APK install, app
-launch, logcat). Remaining: deeper B4A/device workflow polish and designer
-(Phase 8).
+B4X lives inside a Wine prefix. Phase 7 now includes practical **B4A** support:
+B4A project detection, module creation, build under Wine, APK install / launch,
+native Linux `adb` / emulator helpers, and a hybrid flow that opens `B4A.exe`
+for the official debugger. Remaining: deeper B4A/device workflow polish and
+designer (Phase 8).
 
 ---
 
@@ -54,8 +56,13 @@ launch, logcat). Remaining: deeper B4A/device workflow polish and designer
   and the per-platform config under:
 
   ```
-  $WINEPREFIX/drive_c/users/<user>/AppData/Roaming/Anywhere Software/<B4J|B4A>/b4xV5.ini
+  $WINEPREFIX/drive_c/users/<user>/AppData/Roaming/Anywhere Software/B4J/b4xV5.ini
+  $WINEPREFIX/drive_c/users/<user>/AppData/Roaming/Anywhere Software/Basic4android/b4xV5.ini
   ```
+
+- For **B4A**, you should open `B4A.exe` under Wine at least once and configure
+  the Android / Java paths from **Tools → Configure Paths**. Headless B4A builds
+  reuse those saved paths from `b4xV5.ini`.
 
 ## Installation
 
@@ -141,11 +148,17 @@ After loading, run these in `*scratch*` / `M-:`:
 (b4x-wine-resolve-prefix)             ; => "/home/you/.wine_b4x"
 (b4x-wine-active-p)                   ; => t
 (b4x-find-wine-ini 'b4j)             ; => ".../Anywhere Software/B4J/b4xV5.ini"
+(b4x-find-wine-ini 'b4a)             ; => ".../Anywhere Software/Basic4android/b4xV5.ini"
 (b4x--ide-exe-path 'b4j)             ; => ".../B4J/B4J.exe"
+(b4x--ide-exe-path 'b4a)             ; => ".../B4A/B4A.exe"
 ```
 
 If `b4x-wine-active-p` is `nil` while you're on Linux, set `b4x-wine-enabled`
 to `t` explicitly.
+
+For **B4A specifically**, do one first interactive run of `B4A.exe` and set the
+Android SDK / platform / build-tools / Java paths in **Tools → Configure Paths**.
+After that, Emacs / the headless builder reuse the saved B4A configuration.
 
 ## Quick start
 
@@ -226,6 +239,10 @@ across modules.
 
 ### B4A device flow
 
+Before the first headless B4A build on a machine / Wine prefix, open `B4A.exe`
+once and configure the SDK / JDK paths from **Tools → Configure Paths**. After
+that, the saved B4A config is reused by `B4ABuilder.exe`.
+
 Typical Android loop after opening a `.b4a` project:
 
 1. `C-c C-c` → build the APK under Wine.
@@ -262,6 +279,12 @@ under control of the official IDE.
 
 - **`module not found: javafx.*`**: for `AppType=JavaFX` projects, `JavaBin`
   must point at a JDK that bundles JavaFX (see [docs/wine.md](docs/wine.md)).
+
+- **B4A build fails early with missing Android paths / `android.jar` / build-tools**:
+  open `B4A.exe` under Wine once and configure the Android SDK + Java paths in
+  `Tools → Configure Paths`. B4A stores them in
+  `.../Anywhere Software/Basic4android/b4xV5.ini`, and headless builds reuse
+  that file.
 
 - **Builds work from the shell but not from Emacs**: the vendored scripts need
   `WINEPREFIX` or the default `~/.wine_b4x`. Emacs doesn't inherit your shell
