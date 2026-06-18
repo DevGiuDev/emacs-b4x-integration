@@ -206,7 +206,8 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
   (add-hook 'flymake-diagnostic-functions #'b4x-flymake nil t)
   (when (and b4x-enable-flymake (not flymake-mode))
     (flymake-mode 1))
-  (add-hook 'after-save-hook #'b4x-nav--clear-cache nil t))
+  (add-hook 'after-save-hook #'b4x-nav--clear-cache nil t)
+  (b4x--remember-current-project))
 
 (defun b4x--current-sub ()
   "Return the name of the Sub enclosing point, for `which-function' / add-log."
@@ -271,6 +272,17 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
       (user-error "No B4X project found for %s"
                   (or (buffer-file-name) default-directory))))
 
+(defun b4x--remember-project (proj)
+  "Remember PROJ in `project.el' known projects."
+  (when (and proj (fboundp 'project-remember-project))
+    (project-remember-project (cons 'b4x (b4x-project-root-dir proj)))))
+
+(defun b4x--remember-current-project ()
+  "Best-effort helper to remember the current B4X project in `project.el'."
+  (when-let ((proj (ignore-errors (b4x-nav-current-project))))
+    (ignore-errors
+      (b4x--remember-project proj))))
+
 ;;;###autoload
 (defun b4x-open-project (project-file)
   "Open the B4X project at PROJECT-FILE and visit its first module."
@@ -281,6 +293,7 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
                              nil #'b4x-project-file-p))))
   (let* ((proj (b4x-load-project project-file))
          (first-mod (car (b4x-project-modules proj))))
+    (b4x--remember-project proj)
     (if first-mod
         (find-file first-mod)
       (find-file project-file))

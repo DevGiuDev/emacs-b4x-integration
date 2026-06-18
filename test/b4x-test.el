@@ -305,6 +305,15 @@
                           (b4x-version-string)))
   (should (equal (b4x-version) (b4x-version-string))))
 
+(ert-deftest b4x-project/remember-project-integrates-with-project-el ()
+  (let* ((proj (make-b4x-project :root-dir "/tmp/demo-b4x-root"))
+         remembered)
+    (cl-letf (((symbol-function 'project-remember-project)
+               (lambda (pr &optional _no-write)
+                 (setq remembered pr))))
+      (b4x--remember-project proj)
+      (should (equal remembered '(b4x . "/tmp/demo-b4x-root"))))))
+
 (defun b4x-test--write (file content)
   (make-directory (file-name-directory file) t)
   (with-temp-file file
