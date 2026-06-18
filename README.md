@@ -120,6 +120,11 @@ b4x RET`). The ones you are most likely to touch:
 | `b4x-adb-binary` | `adb` | ADB executable used by the B4A Android helpers. |
 | `b4x-adb-serial` | `nil` | Optional `adb -s SERIAL` selector for a specific device/emulator. |
 | `b4x-b4a-logcat-buffer-name` | `*b4x-logcat*` | Buffer used by `b4x-b4a-logcat`. |
+| `b4x-emulator-binary` | `emulator` | Native Linux Android emulator executable. |
+| `b4x-b4a-default-avd` | `nil` | Preferred AVD name for emulator/hybrid-debug commands. |
+| `b4x-b4a-emulator-args` | `nil` | Extra args passed to `emulator -avd ...`. |
+| `b4x-b4a-emulator-log-file` | `nil` | Detached emulator log file. |
+| `b4x-b4a-device-buffer-name` | `*b4x-android*` | Buffer used by device wait / hybrid debug helpers. |
 
 ### Per-project settings (`.dir-locals.el`)
 
@@ -204,6 +209,10 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX) for B4J projects. |
 | `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
 | `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |
+| `C-c a v` | `b4x-b4a-list-avds` | List available Android virtual devices (AVDs). |
+| `C-c a e` | `b4x-b4a-start-emulator` | Start a native Linux Android emulator (`emulator -avd ...`). |
+| `C-c a w` | `b4x-b4a-wait-for-device` | Wait until ADB sees a fully booted device/emulator. |
+| `C-c a d` | `b4x-b4a-debug-in-ide` | Hybrid flow: optional emulator start, wait for device, then open B4A IDE for official debugging. |
 | `C-c a i` | `b4x-b4a-install-apk` | Install the built B4A APK with `adb install -r`. |
 | `C-c a l` | `b4x-b4a-launch-app` | Launch the B4A app on device/emulator via `adb shell monkey`. |
 | `C-c a g` | `b4x-b4a-logcat` | Stream Android logcat into Emacs (`C-u` first clears it). |
@@ -223,6 +232,18 @@ Typical Android loop after opening a `.b4a` project:
 2. `C-c a i` → install/update it on the connected device (`adb install -r`).
 3. `C-c a l` → launch it.
 4. `C-c a g` → inspect runtime logs in Emacs.
+
+### Hybrid B4A debugging flow
+
+If you want the **official B4A debugger** instead of a pure adb loop:
+
+1. `C-u C-c a d` → choose/start an AVD natively on Linux.
+2. Emacs waits for `adb wait-for-device` + `sys.boot_completed=1`.
+3. Emacs opens the current project in `B4A.exe` under Wine.
+4. Use **Run / Debug** inside the B4A IDE.
+
+This keeps emulator / adb native on Linux while leaving the real B4A debugger
+under control of the official IDE.
 
 ## Notes & troubleshooting
 

@@ -74,7 +74,8 @@ layouts. ✅
 - [x] B4A config + build under Wine
 - [x] module creation/registration for B4A (`Class`, `Static Code`, `B4XPage`, `Service`)
 - [x] first Android deployment helpers: install APK, launch app, logcat
-- [ ] deeper device workflow polish (adb uninstall/restart, better filtered logs, etc.)
+- [x] hybrid debug preparation: native Linux emulator/ADB + open B4A IDE for official debugging
+- [ ] deeper device workflow polish (adb uninstall/restart, better filtered logs, auto-select devices, etc.)
 
 ## Phase 8 — Designer
 - Deferred. Open questions captured in WORKPLAN.md.

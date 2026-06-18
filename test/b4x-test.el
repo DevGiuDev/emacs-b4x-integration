@@ -558,3 +558,23 @@
         (b4x-adb-serial "emulator-5554"))
     (should (equal (b4x--adb-command "install" "-r" "/tmp/app.apk")
                    "adb -s emulator-5554 install -r /tmp/app.apk"))))
+
+(ert-deftest b4x-b4a/parse-avd-list ()
+  (should (equal (b4x--b4a-parse-avd-list "Pixel_8\nTablet_API_34\n")
+                 '("Pixel_8" "Tablet_API_34"))))
+
+(ert-deftest b4x-b4a/emulator-shell-command-includes-avd-and-extra-args ()
+  (let ((b4x-emulator-binary "emulator")
+        (b4x-b4a-emulator-args '("-no-snapshot" "-gpu" "host"))
+        (b4x-b4a-emulator-log-file "/tmp/emulator.log"))
+    (should (string-match-p (regexp-quote "emulator -avd Pixel_8 -no-snapshot -gpu host")
+                            (b4x--b4a-emulator-shell-command "Pixel_8")))
+    (should (string-match-p (regexp-quote "/tmp/emulator.log")
+                            (b4x--b4a-emulator-shell-command "Pixel_8")))))
+
+(ert-deftest b4x-b4a/wait-script-uses-adb-and-boot-completion ()
+  (let ((b4x-adb-binary "adb")
+        (b4x-adb-serial "emulator-5554"))
+    (let ((script (b4x--b4a-wait-script)))
+      (should (string-match-p (regexp-quote "adb -s emulator-5554 wait-for-device") script))
+      (should (string-match-p (regexp-quote "shell getprop sys.boot_completed") script)))))

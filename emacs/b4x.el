@@ -4,7 +4,7 @@
 
 ;; Author: emacs-b4x-integration
 ;; Keywords: languages, tools
-;; Version: 0.2.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; SPDX-License-Identifier: MIT
 
@@ -56,7 +56,7 @@
   :group 'languages
   :link '(url-link "https://github.com/emacs-b4x-integration"))
 
-(defconst b4x-package-version "0.3.0"
+(defconst b4x-package-version "0.3.1"
   "Version string of the loaded B4X Emacs package.")
 
 (defun b4x-version-string ()
@@ -123,6 +123,33 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
 
 (defcustom b4x-b4a-logcat-buffer-name "*b4x-logcat*"
   "Buffer name used by `b4x-b4a-logcat'."
+  :group 'b4x
+  :type 'string)
+
+(defcustom b4x-emulator-binary "emulator"
+  "Android emulator executable used by the B4A hybrid helpers."
+  :group 'b4x
+  :type 'string)
+
+(defcustom b4x-b4a-default-avd nil
+  "Default AVD name used by `b4x-b4a-start-emulator' and hybrid debug helpers."
+  :group 'b4x
+  :type '(choice (const :tag "Prompt / none" nil) string))
+
+(defcustom b4x-b4a-emulator-args nil
+  "Extra command-line arguments passed to the Android emulator."
+  :group 'b4x
+  :type '(repeat string))
+
+(defcustom b4x-b4a-emulator-log-file nil
+  "File where detached emulator output is appended.
+
+Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
+  :group 'b4x
+  :type '(choice (const :tag "Default temp file" nil) file))
+
+(defcustom b4x-b4a-device-buffer-name "*b4x-android*"
+  "Buffer name used by Android device wait / hybrid-debug helper commands."
   :group 'b4x
   :type 'string)
 
@@ -200,6 +227,10 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
     (define-key map (kbd "C-c a l") #'b4x-b4a-launch-app)
     (define-key map (kbd "C-c a g") #'b4x-b4a-logcat)
     (define-key map (kbd "C-c a k") #'b4x-b4a-stop-logcat)
+    (define-key map (kbd "C-c a v") #'b4x-b4a-list-avds)
+    (define-key map (kbd "C-c a e") #'b4x-b4a-start-emulator)
+    (define-key map (kbd "C-c a w") #'b4x-b4a-wait-for-device)
+    (define-key map (kbd "C-c a d") #'b4x-b4a-debug-in-ide)
     map)
   "Keymap for `b4x-mode'.")
 
@@ -865,6 +896,133 @@ already running and its PID can be resolved, filter logcat to that process."
                 (pkg (format "for %s (unfiltered)" pkg))
                 (t "(unfiltered)"))))))
 
+(defun b4x--b4a-emulator-log-file ()
+  "Return the log file used for detached Android emulator launches."
+  (or b4x-b4a-emulator-log-file
+      (expand-file-name "b4x-emulator.log" temporary-file-directory)))
+
+(defun b4x--b4a-parse-avd-list (text)
+  "Parse emulator `-list-avds' TEXT into a list of AVD names."
+  (seq-filter (lambda (s) (not (string-empty-p s)))
+              (mapcar #'string-trim (split-string text "\r?\n" t))))
+
+(defun b4x--b4a-list-avds ()
+  "Return the list of available Android AVD names."
+  (b4x--b4a-parse-avd-list
+   (shell-command-to-string
+    (mapconcat #'shell-quote-argument (list b4x-emulator-binary "-list-avds") " "))))
+
+(defun b4x--b4a-read-avd ()
+  "Prompt for an AVD name, using `b4x-b4a-default-avd' when reasonable."
+  (let* ((avds (b4x--b4a-list-avds))
+         (default (and b4x-b4a-default-avd
+                       (member b4x-b4a-default-avd avds)
+                       b4x-b4a-default-avd)))
+    (cond
+     ((null avds)
+      (user-error "No Android AVDs found via `%s -list-avds'" b4x-emulator-binary))
+     ((and default (= (length avds) 1)) default)
+     (t (completing-read "AVD: " avds nil t nil nil default)))))
+
+(defun b4x--b4a-emulator-shell-command (avd)
+  "Return a detached shell command that launches AVD with the Linux emulator."
+  (let ((logfile (b4x--b4a-emulator-log-file)))
+    (format "setsid nohup %s -avd %s %s </dev/null >>%s 2>&1 &"
+            (shell-quote-argument b4x-emulator-binary)
+            (shell-quote-argument avd)
+            (mapconcat #'shell-quote-argument b4x-b4a-emulator-args " ")
+            (shell-quote-argument logfile))))
+
+(defun b4x--b4a-wait-script ()
+  "Return the shell script body that waits for Android boot completion via ADB."
+  (let ((adb (b4x--adb-command)))
+    (format "%s wait-for-device && until [ \"$(%s shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')\" = 1 ]; do sleep 2; done && echo Device ready"
+            adb adb)))
+
+(defun b4x--b4a-wait-shell-command ()
+  "Return a shell command that waits for Android boot completion via ADB."
+  (format "bash -lc %s"
+          (shell-quote-argument (b4x--b4a-wait-script))))
+
+(defun b4x--open-project-in-ide (proj)
+  "Open PROJ in the official B4X IDE under Wine."
+  (unless (b4x-wine-active-p)
+    (user-error "Opening the IDE requires Wine (set `b4x-wine-enabled'/`b4x-wine-prefix')"))
+  (let* ((spec (b4x--open-in-ide-command-args proj))
+         (exe (car spec))
+         (pf-win (cdr spec))
+         (exe-win (b4x-host-to-wine-path exe))
+         (prefix (b4x-wine-resolve-prefix))
+         (logfile (b4x--ide-log-file))
+         (default-directory (b4x-project-project-dir proj))
+         (process-environment
+          (cons (format "WINEPREFIX=%s" prefix) process-environment))
+         (shell-cmd (format "setsid nohup %s %s %s </dev/null >>%s 2>&1 &"
+                            (shell-quote-argument b4x-wine-binary)
+                            (shell-quote-argument exe-win)
+                            (shell-quote-argument pf-win)
+                            (shell-quote-argument logfile))))
+    (message "B4X: opening %s in the IDE (wine %s) — log: %s"
+             (file-name-nondirectory (b4x-project-project-file proj))
+             (file-name-nondirectory exe)
+             logfile)
+    (call-process-shell-command shell-cmd)))
+
+;;;###autoload
+(defun b4x-b4a-list-avds ()
+  "Display the available Android AVD names discovered by the Linux emulator."
+  (interactive)
+  (let ((avds (b4x--b4a-list-avds)))
+    (if avds
+        (message "B4X: AVDs: %s" (string-join avds ", "))
+      (message "B4X: no AVDs found"))))
+
+;;;###autoload
+(defun b4x-b4a-start-emulator (avd)
+  "Start Android emulator AVD natively on Linux, detached from Emacs."
+  (interactive (list (b4x--b4a-read-avd)))
+  (call-process-shell-command (b4x--b4a-emulator-shell-command avd))
+  (message "B4X: starting Android emulator `%s' — log: %s"
+           avd (b4x--b4a-emulator-log-file)))
+
+;;;###autoload
+(defun b4x-b4a-wait-for-device ()
+  "Wait for an Android device/emulator to become fully booted."
+  (interactive)
+  (compile (b4x--b4a-wait-shell-command)))
+
+;;;###autoload
+(defun b4x-b4a-debug-in-ide (&optional avd)
+  "Prepare native Android tooling, then open the current B4A project in B4A IDE.
+
+With prefix argument, prompt for an AVD and launch it natively first.  Then
+wait for ADB/device boot completion asynchronously and finally open `B4A.exe'
+under Wine so the official debugger can be used from the IDE."
+  (interactive (list (and current-prefix-arg (b4x--b4a-read-avd))))
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (project-file (b4x-project-project-file proj))
+         (buf (get-buffer-create b4x-b4a-device-buffer-name)))
+    (when avd
+      (call-process-shell-command (b4x--b4a-emulator-shell-command avd))
+      (message "B4X: starting Android emulator `%s' — waiting for boot..." avd))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (compilation-mode)))
+    (let ((proc (make-process :name "b4x-android-wait"
+                              :buffer buf
+                              :command (list "bash" "-lc" (b4x--b4a-wait-script))
+                              :noquery t
+                              :sentinel
+                              (lambda (p _event)
+                                (when (and (memq (process-status p) '(exit signal))
+                                           (= (process-exit-status p) 0))
+                                  (b4x--open-project-in-ide (b4x-load-project project-file))
+                                  (message "B4X: device ready; project opened in B4A IDE. Use Run/Debug there."))))))
+      (set-process-query-on-exit-flag proc nil)
+      (display-buffer buf)
+      (message "B4X: waiting for Android device/emulator..."))))
+
 
 ;;; Open the B4X IDE under Wine
 
@@ -902,31 +1060,7 @@ file as a Windows path.  The process is fully detached from Emacs
 (`nohup ... </dev/null >>log 2>&1 &') so the GUI runs independently even
 after Emacs is closed; Wine output is appended to `b4x-ide-log-file'."
   (interactive)
-  (unless (b4x-wine-active-p)
-    (user-error "Opening the IDE requires Wine (set `b4x-wine-enabled'/`b4x-wine-prefix')"))
-  (let* ((proj (b4x--current-project))
-         (spec (b4x--open-in-ide-command-args proj))
-         (exe (car spec))
-         (pf-win (cdr spec))
-         (exe-win (b4x-host-to-wine-path exe))
-         (prefix (b4x-wine-resolve-prefix))
-         (logfile (b4x--ide-log-file))
-         ;; Run from a local directory so we never go through a Tramp handler.
-         (default-directory (b4x-project-project-dir proj))
-         (process-environment
-          (cons (format "WINEPREFIX=%s" prefix) process-environment))
-         (shell-cmd (format "setsid nohup %s %s %s </dev/null >>%s 2>&1 &"
-                            (shell-quote-argument b4x-wine-binary)
-                            (shell-quote-argument exe-win)
-                            (shell-quote-argument pf-win)
-                            (shell-quote-argument logfile))))
-    (message "B4X: opening %s in the IDE (wine %s) — log: %s"
-             (file-name-nondirectory (b4x-project-project-file proj))
-             (file-name-nondirectory exe)
-             logfile)
-    ;; `call-process-shell-command' returns once the shell backgrounds wine,
-    ;; and `nohup' keeps it alive after Emacs exits.
-    (call-process-shell-command shell-cmd)))
+  (b4x--open-project-in-ide (b4x--current-project)))
 
 (defun b4x--ide-log-file ()
   "Return the Wine log path used by `b4x-open-in-ide'."
@@ -1038,6 +1172,10 @@ at point that matches a declared layout."
     ("e" "Open in B4X IDE"    b4x-open-in-ide)
     ("L" "Show IDE log"        b4x-ide-log)]
    ["B4A / Android"
+    ("a v" "List AVDs"         b4x-b4a-list-avds)
+    ("a e" "Start emulator"    b4x-b4a-start-emulator)
+    ("a w" "Wait for device"   b4x-b4a-wait-for-device)
+    ("a d" "Debug in B4A IDE"  b4x-b4a-debug-in-ide)
     ("a i" "Install APK"       b4x-b4a-install-apk)
     ("a l" "Launch app"        b4x-b4a-launch-app)
     ("a g" "Logcat"            b4x-b4a-logcat)
