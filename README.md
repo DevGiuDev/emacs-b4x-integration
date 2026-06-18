@@ -194,7 +194,7 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 
 | Key | Command | Description |
 | --- | --- | --- |
-| `C-c C-c` | `b4x-build` | Build with `wine B4JBuilder.exe`/`B4ABuilder.exe`. |
+| `C-c C-c` | `b4x-build` | Build with `wine B4JBuilder.exe`/`B4ABuilder.exe` (the builder itself handles code generation + Java compilation internally). |
 | `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX). |
 | `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
 | `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |

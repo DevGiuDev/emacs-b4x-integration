@@ -7,6 +7,12 @@
 #                 [--config <configuration>] [--wineprefix <dir>]
 #                 [--b4x-root <dir>] [--] [project-dir]
 #
+# Important:
+#   This wrapper does NOT compile Java itself. It launches B4JBuilder.exe /
+#   B4ABuilder.exe under Wine. The builder is responsible for generating any
+#   intermediate Java sources and invoking the configured Java toolchain
+#   internally (for B4J, via the JavaBin configured in b4xV5.ini).
+#
 # Defaults:
 #   project-dir     = current working directory
 #   --project       = the only .b4j/.b4a file in project-dir (auto-detected)
@@ -110,14 +116,18 @@ esac
 
 # ---- run builder ----------------------------------------------------------
 PROJECT_WIN="$(WINEPREFIX="$WINEPREFIX_VAL" winepath -w "$PROJECT_DIR")"
+PROJECT_FILE_WIN="$(WINEPREFIX="$WINEPREFIX_VAL" winepath -w "$PROJECT_FILE")"
 
 echo "b4x-build: flavor=$FLAVOR builder=$BUILDER task=$TASK config=${CONFIG:-<none>}"
-echo "b4x-build: project=$PROJECT_WIN"
+echo "b4x-build: project-dir=$PROJECT_WIN"
+echo "b4x-build: project-file=$PROJECT_FILE_WIN"
 
-# Build the argument list. Only pass -BuildConfig when the user explicitly
-# provided --config; otherwise let the builder pick the first Build1= entry
-# from the .b4j file.
-ARGS=(-Task="$TASK" -BaseFolder="$PROJECT_WIN")
+# Build the argument list. Pass both the platform folder and the concrete
+# project file. `-Project` makes the invocation deterministic and matches the
+# documented builder usage under Wine. Only pass -BuildConfig when the user
+# explicitly provided --config; otherwise let the builder pick the first
+# Build1= entry from the .b4j/.b4a file.
+ARGS=(-Task="$TASK" -BaseFolder="$PROJECT_WIN" -Project="$PROJECT_FILE_WIN")
 if [[ -n "${CONFIG:-}" ]]; then
   ARGS+=(-BuildConfig="$CONFIG")
 fi

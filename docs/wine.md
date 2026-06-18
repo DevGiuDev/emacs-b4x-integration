@@ -96,6 +96,10 @@ WINEPREFIX=<prefix> wine "<install>/B4J/B4JBuilder.exe" \
 ```
 
 - Paths passed to the builder must be **Windows paths** (`winepath -w`).
+- `B4JBuilder` / `B4ABuilder` perform the real build work internally: they
+  read the project file, generate any intermediate sources they need, and
+  invoke the configured Java toolchain themselves (for B4J, based on
+  `JavaBin=` in `b4xV5.ini`). Emacs does not compile Java sources directly.
 - Wine's exit code is unreliable; success is detected from the
   `Completed successfully` textual marker in output.
 - Output jar: `<project>/Objects/<ProjectName>.jar`.
