@@ -18,3 +18,6 @@ Thumbs.db
 # Test artifacts
 test/.work/
 *.log
+
+# Emacs byte-compiled files
+*.elc
