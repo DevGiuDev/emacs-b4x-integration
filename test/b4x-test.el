@@ -207,6 +207,21 @@
       (should (equal (b4x-nav-lookup tab "appstart")
                      (b4x-nav-lookup tab "AppStart"))))))
 
+(ert-deftest b4x-nav/table-cache-uses-string-equality ()
+  (let ((build-count 0)
+        (b4x-nav--table-cache nil))
+    (cl-letf (((symbol-function 'b4x-nav-current-project)
+               (lambda ()
+                 ;; Fresh string object each call: `eq' would miss this cache.
+                 (make-b4x-project :project-file (copy-sequence "/tmp/Demo.b4j"))))
+              ((symbol-function 'b4x-nav-build-table)
+               (lambda (proj)
+                 (cl-incf build-count)
+                 (make-b4x-symtab :project proj))))
+      (should (b4x-nav-table))
+      (should (b4x-nav-table))
+      (should (= build-count 1)))))
+
 (ert-deftest b4x-nav/imenu-current-buffer ()
   (with-temp-buffer
     (insert-file-contents b4x-test--proyprueba)
@@ -356,6 +371,515 @@
   (make-directory (file-name-directory file) t)
   (with-temp-file file
     (insert content)))
+
+(defun b4x-test--write-b4xlib (archive files)
+  "Create ARCHIVE as a `.b4xlib' zip from FILES alist of (NAME . CONTENT)."
+  (unless (executable-find "python3")
+    (error "python3 is required to build test .b4xlib archives"))
+  (let ((srcdir (make-temp-file "b4xlib-src-" t)))
+    (unwind-protect
+        (progn
+          (dolist (entry files)
+            (b4x-test--write (expand-file-name (car entry) srcdir) (cdr entry)))
+          (with-temp-buffer
+            (unless (eq 0 (call-process "python3" nil t nil "-c"
+                                        (concat
+                                         "import os, sys, zipfile\n"
+                                         "archive, src = sys.argv[1], sys.argv[2]\n"
+                                         "with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as z:\n"
+                                         "    for root, _, files in os.walk(src):\n"
+                                         "        for f in files:\n"
+                                         "            p = os.path.join(root, f)\n"
+                                         "            z.write(p, os.path.relpath(p, src))\n")
+                                        archive srcdir))
+              (error "Failed to create %s: %s" archive (buffer-string)))))
+      (delete-directory srcdir t))))
+
+(ert-deftest b4x-project/library-xml-api-parsing-and-candidates ()
+  (let* ((root (make-temp-file "b4x-libxml-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir))
+         (xml-file (expand-file-name "Foo.xml" core-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory core-dir t)
+          (b4x-test--write
+           xml-file
+           (mapconcat #'identity
+                      '("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+                        "<root>"
+                        "  <class>"
+                        "    <name>demo.wrapper.FooWrapper</name>"
+                        "    <shortname>Foo</shortname>"
+                        "    <event>Ready (Success As Boolean)</event>"
+                        "    <method><name>Bar</name></method>"
+                        "    <property><name>Baz</name></property>"
+                        "  </class>"
+                        "</root>")
+                      "\n"))
+          (b4x-test--write ini-file (format "LibrariesFolder=%s\n" core-dir))
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=Foo"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (apis (b4x-project-library-apis proj))
+                 (api (car apis))
+                 (class (car (b4x-library-api-classes api)))
+                 (cands (b4x-project-library-completion-candidates proj))
+                 (bar-info (b4x-project-library-symbol-info proj "Bar")))
+            (should (= (length apis) 1))
+            (should (equal (b4x-library-api-xml-path api) xml-file))
+            (should (equal (b4x-library-class-shortname class) "Foo"))
+            (should (equal (b4x-library-class-methods class) '("Bar")))
+            (should (equal (b4x-library-class-properties class) '("Baz")))
+            (should (equal (b4x-library-class-events class) '("Ready")))
+            (should (equal (b4x-project-format-library-member-signature
+                            (car (b4x-library-class-method-details class)))
+                           "Bar()"))
+            (should (equal (plist-get bar-info :kind) 'method))
+            (should (equal (b4x-project-library-symbol-annotation proj "Bar")
+                           " [method:Foo]"))
+            (should (member "Foo" cands))
+            (should (member "Bar" cands))
+            (should (member "Baz" cands))
+            (should (member "Ready" cands))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-nav/completion-includes-library-xml-candidates ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) '("Foo" "Bar" "Ready")))
+              ((symbol-function 'b4x-project-library-symbol-annotation)
+               (lambda (_proj cand) (and (string= cand "Foo") " [class]")))
+              ((symbol-function 'b4x-project-library-symbol-doc)
+               (lambda (_proj cand &optional multiline)
+                 (and (string= cand "Foo")
+                      (if multiline "Foo\nLibrary: Test" "Foo")))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Fo")
+        (let* ((capf (b4x-completion-at-point))
+               (collection (nth 2 capf))
+               (cands (all-completions "F" collection))
+               (annotation-fn (plist-get (nthcdr 3 capf) :annotation-function))
+               (doc-fn (plist-get (nthcdr 3 capf) :company-doc-buffer)))
+          (should (member "Foo" cands))
+          (should (eq (plist-get (nthcdr 3 capf) :category) 'b4x))
+          (should (equal (funcall annotation-fn "Foo") " [class]"))
+          (should (string-match-p "Library: Test"
+                                  (with-current-buffer (funcall doc-fn "Foo")
+                                    (buffer-string)))))))))
+
+(ert-deftest b4x-nav/completion-includes-local-vars-from-current-sub ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-candidates)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Private Sub Base64Encode(Value As String) As String\n"
+                "    Dim Base64JO As JavaObject\n"
+                "    Base64J\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Base64J")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "Base64J" (nth 2 capf))))
+          (should (member "Base64JO" cands)))))))
+
+(ert-deftest b4x-nav/completion-after-as-only-offers-types ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--project-type-names)
+               (lambda (_proj _tab) '("Map" "List" "JavaObject" "String")))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) '("CreateMap" "ConfigAsMap"))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Dim n As Ma")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "Ma" (nth 2 capf))))
+          (should (member "Map" cands))
+          (should-not (member "CreateMap" cands))
+          (should-not (member "ConfigAsMap" cands))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Dim s As St")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "St" (nth 2 capf))))
+          (should (member "String" cands)))))))
+
+(ert-deftest b4x-nav/contextual-map-members-from-implicit-core-api ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj))
+         (map-class (make-b4x-library-class :shortname "Map"
+                                            :methods '("ContainsKey" "Put")
+                                            :properties '("Size")))
+         (api (make-b4x-library-api :classes (list map-class))))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) (list api)))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Private Sub Test\n"
+                "    Dim Entry As Map\n"
+                "    Entry.\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Entry.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "ContainsKey" cands))
+          (should (member "Put" cands))
+          (should (member "Size" cands)))))))
+
+(ert-deftest b4x-nav/contextual-core-members-from-builtins-with-initializer ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Private Sub Test\n"
+                "    Dim Items As List = Array(1, 2, 3)\n"
+                "    Dim Entry As Map = CreateMap()\n"
+                "    Items.\n"
+                "    Entry.\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Items.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "Add" cands))
+          (should (member "Size" cands)))
+        (search-forward "Entry.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "ContainsKey" cands))
+          (should (member "Put" cands)))))))
+
+(ert-deftest b4x-project/pom-indexing-and-association ()
+  (let* ((root (make-temp-file "b4x-pom-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir))
+         (jar-file (expand-file-name "Foo.jar" core-dir))
+         (pom-file (expand-file-name "maven/demo/foo/pom.xml" core-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory (file-name-directory pom-file) t)
+          (make-directory core-dir t)
+          (b4x-test--write jar-file "")
+          (b4x-test--write
+           pom-file
+           (mapconcat #'identity
+                      '("<project xmlns=\"http://maven.apache.org/POM/4.0.0\""
+                        "         xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\""
+                        "         xsi:schemaLocation=\"http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd\">"
+                        "  <modelVersion>4.0.0</modelVersion>"
+                        "  <groupId>demo.group</groupId>"
+                        "  <artifactId>Foo</artifactId>"
+                        "  <version>1.2.3</version>"
+                        "  <packaging>jar</packaging>"
+                        "  <name>Foo Library</name>"
+                        "  <description>Demo Foo artifact</description>"
+                        "</project>")
+                      "\n"))
+          (b4x-test--write ini-file (format "LibrariesFolder=%s\n" core-dir))
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=Foo"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (poms (b4x-project-library-poms proj))
+                 (pom (seq-find (lambda (it)
+                                  (equal (b4x-library-pom-path it) pom-file))
+                                poms))
+                 (assoc-pom (b4x-project-find-library-pom proj "Foo")))
+            (should pom)
+            (should (>= (length poms) 1))
+            (should (equal (b4x-library-pom-artifact-id pom) "Foo"))
+            (should (equal (b4x-library-pom-group-id pom) "demo.group"))
+            (should (equal (b4x-library-pom-version pom) "1.2.3"))
+            (should (equal (b4x-library-pom-description pom) "Demo Foo artifact"))
+            (should (equal (b4x-library-pom-path assoc-pom) pom-file))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-nav/eldoc-falls-back-to-library-xml-doc ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-project-library-symbol-doc)
+               (lambda (_proj cand &optional _multiline)
+                 (and (string= cand "Bar") "Bar() — library doc"))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Bar")
+        (should (equal (b4x-eldoc-function) "Bar() — library doc"))))))
+
+(ert-deftest b4x-project/b4xlib-indexing-and-docs ()
+  (unless (executable-find "unzip")
+    (ert-skip "unzip not available"))
+  (let* ((root (make-temp-file "b4x-b4xlib-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir))
+         (lib-file (expand-file-name "DemoLib.b4xlib" core-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory core-dir t)
+          (b4x-test--write-b4xlib
+           lib-file
+           '(("manifest.txt" . "Module=DemoLib")
+             ("Utility.bas" . "Sub Process_Globals\n  Public GlobalCounter As Int\nEnd Sub\n\nPublic Sub DoWork(Name As String)\nEnd Sub\n\nType DemoType\n  Value As String\nEnd Type\n")
+             ("Worker.bas" . "Sub Class_Globals\n  Private LocalValue As Int\nEnd Sub\n\nPublic Sub Initialize\nEnd Sub\n")))
+          (b4x-test--write ini-file (format "LibrariesFolder=%s\n" core-dir))
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=DemoLib"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (cands (b4x-nav--project-b4xlib-candidates proj)))
+            (should (member "Utility" cands))
+            (should (member "Worker" cands))
+            (should (member "DoWork" cands))
+            (should (member "DemoType" cands))
+            (should (member "GlobalCounter" cands))
+            (should (equal (b4x-nav--b4xlib-symbol-annotation proj "Utility")
+                           " [b4xlib:module]"))
+            (should (string-match-p "DoWork(Name As String)"
+                                    (b4x-nav--b4xlib-symbol-doc proj "DoWork")))
+            (should (string-match-p "Utility (b4xlib module)"
+                                    (b4x-nav--b4xlib-symbol-doc proj "Utility")))) )
+      (delete-directory root t))))
+
+(ert-deftest b4x-nav/eldoc-falls-back-to-b4xlib-doc ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--b4xlib-symbol-doc)
+               (lambda (_proj cand &optional _multiline)
+                 (and (string= cand "DoWork") "DoWork(Name As String) — b4xlib"))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "DoWork")
+        (should (equal (b4x-eldoc-function) "DoWork(Name As String) — b4xlib"))))))
+
+(ert-deftest b4x-project/available-libraries-merge-core-and-additional ()
+  (let* ((root (make-temp-file "b4x-libs-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (additional-dir (expand-file-name "Additional Libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory core-dir t)
+          (make-directory additional-dir t)
+          (make-directory (expand-file-name "nested" core-dir) t)
+          (b4x-test--write (expand-file-name "jCore.jar" core-dir) "")
+          (b4x-test--write (expand-file-name "Json.jar" core-dir) "")
+          (b4x-test--write (expand-file-name "HikariCP.jar" core-dir) "")
+          (b4x-test--write (expand-file-name "HikariCP.xml" core-dir) "")
+          (b4x-test--write (expand-file-name "B4XPages.b4xlib" core-dir) "")
+          (b4x-test--write (expand-file-name "ignored.jar" (expand-file-name "nested" core-dir)) "")
+          (b4x-test--write (expand-file-name "CustomLib.b4xlib" additional-dir) "")
+          (b4x-test--write (expand-file-name "B4XPages.b4xlib" additional-dir) "")
+          (b4x-test--write
+           ini-file
+           (format "LibrariesFolder=%s\nAdditionalLibrariesFolder=%s\n"
+                   core-dir additional-dir))
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=jcore"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (libs (b4x-project-available-libraries proj))
+                 (names (mapcar #'b4x-library-canonical-name libs))
+                 (b4xpages (b4x-project-find-available-library proj "b4xpages"))
+                 (hikari (b4x-project-find-available-library proj "HikariCP")))
+            (should (equal names '("b4xpages" "customlib" "hikaricp" "jcore" "json")))
+            (should (eq (b4x-library-source b4xpages) 'additional))
+            (should (eq (b4x-library-kind hikari) 'xml))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-project/available-library-lines-mark-present ()
+  (let ((proj (make-b4x-project :libraries '("Json"))))
+    (cl-letf (((symbol-function 'b4x-project-available-libraries)
+               (lambda (_proj)
+                 (list (make-b4x-library :name "Json"
+                                         :canonical-name "json"
+                                         :source 'core
+                                         :kind 'jar
+                                         :path "/tmp/Json.jar")
+                       (make-b4x-library :name "XLUtils"
+                                         :canonical-name "xlutils"
+                                         :source 'additional
+                                         :kind 'b4xlib
+                                         :path "/tmp/XLUtils.b4xlib")))))
+      (let ((lines (b4x--available-library-lines proj)))
+        (should (string-prefix-p "* Json" (car lines)))
+        (should (string-match-p (regexp-quote "[core       jar   ] /tmp/Json.jar")
+                                (car lines)))
+        (should (string-prefix-p "  XLUtils" (cadr lines)))))))
+
+(ert-deftest b4x-project/insert-available-library-entry-makes-button ()
+  (let ((proj (make-b4x-project :libraries '("Json")))
+        (lib (make-b4x-library :name "Json"
+                               :canonical-name "json"
+                               :source 'core
+                               :kind 'jar
+                               :path "/tmp/Json.jar")))
+    (with-temp-buffer
+      (b4x-libraries-mode)
+      (let ((inhibit-read-only t))
+        (b4x--insert-available-library-entry proj lib))
+      (goto-char (point-min))
+      (let ((button (button-at (point))))
+        (should button)
+        (should (equal (button-get button 'b4x-library-name) "Json"))
+        (should (button-get button 'b4x-library-present))))))
+
+(ert-deftest b4x-project/list-available-libraries-buffer-mode ()
+  (let ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"
+                                :platform 'b4j
+                                :libraries '("Json"))))
+    (cl-letf (((symbol-function 'b4x--current-project) (lambda () proj))
+              ((symbol-function 'b4x-project-library-dirs)
+               (lambda (_proj) '((core . "/tmp/core") (additional . "/tmp/additional"))))
+              ((symbol-function 'b4x-project-available-libraries)
+               (lambda (_proj)
+                 (list (make-b4x-library :name "Json"
+                                         :canonical-name "json"
+                                         :source 'core
+                                         :kind 'jar
+                                         :path "/tmp/core/Json.jar")))))
+      (b4x-list-available-libraries)
+      (with-current-buffer "*B4X Libraries*"
+        (should (eq major-mode 'b4x-libraries-mode))
+        (should (equal b4x--libraries-project-file "/tmp/Demo.b4j"))
+        (goto-char (point-min))
+        (search-forward "Actions: RET/mouse-1 toggle")
+        (goto-char (point-min))
+        (search-forward "Json")
+        (should (button-at (match-beginning 0)))))))
+
+(ert-deftest b4x-project/add-library-updates-header ()
+  (let* ((root (make-temp-file "b4x-addlib-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory core-dir t)
+          (b4x-test--write (expand-file-name "Json.jar" core-dir) "")
+          (b4x-test--write
+           ini-file
+           (format "LibrariesFolder=%s\n" core-dir))
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=jcore"
+                        "NumberOfLibraries=1"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (added (b4x--add-library-to-project proj "Json"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string))))
+            (should (equal added "Json"))
+            (should (string-match-p "Library2=Json" project-text))
+            (should (string-match-p "NumberOfLibraries=2" project-text))
+            (should-not (b4x--add-library-to-project (b4x-load-project project-file ini-file)
+                                                     "Json"))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-project/remove-library-updates-header ()
+  (let* ((root (make-temp-file "b4x-rmlib-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Library1=jcore"
+                        "Library2=jfx"
+                        "Library3=Json"
+                        "NumberOfLibraries=3"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file))
+                 (removed (b4x--remove-library-from-project proj "jfx"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string))))
+            (should (equal removed "jfx"))
+            (should (string-match-p "Library1=jcore" project-text))
+            (should (string-match-p "Library2=Json" project-text))
+            (should-not (string-match-p "Library3=" project-text))
+            (should (string-match-p "NumberOfLibraries=2" project-text))
+            (should-not (b4x--remove-library-from-project (b4x-load-project project-file)
+                                                          "does-not-exist"))))
+      (delete-directory root t))))
 
 (ert-deftest b4x-new-module/class-in-platform-project-root ()
   (let* ((root (make-temp-file "b4x-newmod-root-" t))

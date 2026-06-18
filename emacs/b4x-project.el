@@ -18,6 +18,8 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'seq)
+(require 'dom)
+(require 'xml)
 (require 'b4x-wine)
 
 
@@ -40,6 +42,61 @@
   ini-path                  ; b4xV5.ini path if known, else nil
   main-code)                ; source after @EndOfDesignText@ (string, may be "")
 
+(cl-defstruct b4x-library
+  "Library discovered in a core or Additional Libs folder."
+  name                      ; display name / header value candidate
+  canonical-name            ; downcased `name' for case-insensitive lookup
+  source                    ; `core' or `additional'
+  kind                      ; `xml', `jar', `aar', or `b4xlib'
+  path)                     ; absolute host path of the backing artifact
+
+(cl-defstruct b4x-library-parameter
+  "One parameter declared in a library XML method/property."
+  name
+  type)
+
+(cl-defstruct b4x-library-member
+  "One method/property/event declared in a library XML class."
+  name
+  kind                      ; `method', `property', or `event'
+  signature                 ; raw/signature text when directly available
+  returntype
+  parameters                ; list of `b4x-library-parameter'
+  comment)
+
+(cl-defstruct b4x-library-class
+  "API metadata for one wrapper class declared by a B4X library XML."
+  shortname                 ; B4X-facing short type name
+  full-name                 ; JVM class name
+  objectwrapper             ; wrapped implementation class, if any
+  comment                   ; class comment/docstring
+  owner                     ; B4X owner scope, if any
+  methods                   ; list of method names
+  properties                ; list of property names
+  events                    ; list of event names
+  method-details            ; list of `b4x-library-member'
+  property-details          ; list of `b4x-library-member'
+  event-details)            ; list of `b4x-library-member'
+
+(cl-defstruct b4x-library-api
+  "Parsed API metadata for one B4X library."
+  library                   ; `b4x-library' source object
+  xml-path                  ; XML file used as metadata source
+  version                   ; library version string, if any
+  author                    ; author string, if any
+  classes)                  ; list of `b4x-library-class'
+
+(cl-defstruct b4x-library-pom
+  "Parsed Maven POM metadata discovered in library folders."
+  path
+  source                    ; `core' or `additional'
+  group-id
+  artifact-id
+  version
+  packaging
+  name
+  description)
+
 (defconst b4x-project--platform-exts
   '(("b4j" . b4j) ("b4a" . b4a) ("b4i" . b4i) ("b4r" . b4r))
   "Project-file extension -> platform symbol.")
@@ -47,6 +104,32 @@
 (defconst b4x-project--platform-folders
   '("B4J" "B4A" "B4i" "B4R")
   "Folder names that denote a platform subfolder of a B4X project root.")
+
+(defconst b4x-project--library-exts '("xml" "jar" "aar" "b4xlib")
+  "Library artifact extensions scanned in core / Additional Libs folders.")
+
+(defconst b4x-project--library-kind-priority
+  '((b4xlib . 4) (xml . 3) (aar . 2) (jar . 1))
+  "Preference order when several artifacts resolve to the same library name.")
+
+(defvar b4x-project--library-api-cache (make-hash-table :test 'equal)
+  "Cache of parsed library XML metadata, keyed by absolute XML path.")
+
+(defvar b4x-project--available-libraries-cache (make-hash-table :test 'equal)
+  "Cache of scanned library folders keyed by folder paths and mtimes.")
+
+(defvar b4x-project--library-symbol-index-cache (make-hash-table :test 'equal)
+  "Cache of per-project library XML symbol indexes.")
+
+(defvar b4x-project--library-pom-cache (make-hash-table :test 'equal)
+  "Cache of parsed Maven POM metadata, keyed by absolute POM path.")
+
+(defun b4x-project-clear-caches ()
+  "Clear cached library/project metadata."
+  (setq b4x-project--library-api-cache (make-hash-table :test 'equal))
+  (setq b4x-project--available-libraries-cache (make-hash-table :test 'equal))
+  (setq b4x-project--library-symbol-index-cache (make-hash-table :test 'equal))
+  (setq b4x-project--library-pom-cache (make-hash-table :test 'equal)))
 
 
 ;;; Helpers
@@ -277,6 +360,470 @@ Keys: `libraries-folder', `additional-libraries-folder',
                 (unless (string-empty-p val)
                   (push (cons key val) entries))))))))
     (nreverse entries)))
+
+
+;;; Libraries
+
+(defun b4x-project-library-dirs (project)
+  "Return an alist of library directories known for PROJECT.
+
+Keys are `core' and `additional'.  Values are absolute host paths or nil."
+  (let* ((folders (and (b4x-project-ini-path project)
+                       (b4x-ini-folders (b4x-project-ini-path project))))
+         (core (or (cdr (assq 'libraries-folder folders))
+                   (when-let ((install (and (b4x-wine-active-p)
+                                            (b4x-find-wine-install-dir
+                                             (b4x-project-platform project)))))
+                     (expand-file-name "Libraries" install))))
+         (additional (cdr (assq 'additional-libraries-folder folders))))
+    (list (cons 'core core)
+          (cons 'additional additional))))
+
+(defun b4x-project--library-kind-rank (kind)
+  "Return numeric preference for library KIND."
+  (or (cdr (assq kind b4x-project--library-kind-priority)) 0))
+
+(defun b4x-project--scan-library-dir (dir source)
+  "Return libraries discovered in DIR for SOURCE.
+
+Only top-level `.xml', `.jar', `.aar', and `.b4xlib' files are considered."
+  (let ((table (make-hash-table :test 'equal)))
+    (when (and dir (file-directory-p dir))
+      (dolist (file (directory-files dir t "^[^.]" t))
+        (when (file-regular-p file)
+          (let ((ext (downcase (or (file-name-extension file) ""))))
+            (when (member ext b4x-project--library-exts)
+              (let* ((name (file-name-base file))
+                     (canonical (downcase name))
+                     (kind (intern ext))
+                     (lib (make-b4x-library :name name
+                                            :canonical-name canonical
+                                            :source source
+                                            :kind kind
+                                            :path file))
+                     (prev (gethash canonical table)))
+                (when (or (null prev)
+                          (> (b4x-project--library-kind-rank kind)
+                             (b4x-project--library-kind-rank
+                              (b4x-library-kind prev))))
+                  (puthash canonical lib table))))))))
+    (let (out)
+      (maphash (lambda (_ lib) (push lib out)) table)
+      (sort out (lambda (a b)
+                  (string< (b4x-library-canonical-name a)
+                           (b4x-library-canonical-name b)))))))
+
+(defun b4x-project--library-dir-stamp (entry)
+  "Return a cache stamp for library directory ENTRY.
+ENTRY has the shape (SOURCE . DIR)."
+  (pcase-let ((`(,source . ,dir) entry))
+    (let* ((attrs (and dir (file-directory-p dir) (file-attributes dir)))
+           (mtime (and attrs (file-attribute-modification-time attrs))))
+      (list source dir mtime))))
+
+(defun b4x-project-available-libraries (project)
+  "Return libraries available to PROJECT from core and Additional Libs.
+
+When the same library exists in both places, the Additional Libs entry wins.
+Directory scans are cached and invalidated automatically when the library
+folder mtimes change."
+  (let* ((dirs (b4x-project-library-dirs project))
+         (cache-key (mapcar #'b4x-project--library-dir-stamp dirs)))
+    (or (gethash cache-key b4x-project--available-libraries-cache)
+        (let ((table (make-hash-table :test 'equal)))
+          (dolist (entry dirs)
+            (pcase-let ((`(,source . ,dir) entry))
+              (dolist (lib (b4x-project--scan-library-dir dir source))
+                (let ((key (b4x-library-canonical-name lib))
+                      (prev (gethash (b4x-library-canonical-name lib) table)))
+                  (when (or (null prev)
+                            (eq (b4x-library-source lib) 'additional))
+                    (puthash key lib table))))))
+          (let (out)
+            (maphash (lambda (_ lib) (push lib out)) table)
+            (setq out (sort out (lambda (a b)
+                                  (string< (b4x-library-canonical-name a)
+                                           (b4x-library-canonical-name b)))))
+            (puthash cache-key out b4x-project--available-libraries-cache)
+            out)))))
+
+(defun b4x-project-find-available-library (project name)
+  "Return the available library named NAME for PROJECT, or nil.
+
+Lookup is case-insensitive."
+  (let ((needle (downcase name)))
+    (seq-find (lambda (lib)
+                (string= (b4x-library-canonical-name lib) needle))
+              (b4x-project-available-libraries project))))
+
+(defun b4x-project-library-xml-path (library)
+  "Return the XML metadata path associated with LIBRARY, or nil."
+  (when library
+    (pcase (b4x-library-kind library)
+      ('xml (b4x-library-path library))
+      (_ (let ((candidate (concat (file-name-sans-extension
+                                   (b4x-library-path library))
+                                  ".xml")))
+           (and (file-regular-p candidate) candidate))))))
+
+(defun b4x-project--dom-direct-children (node tag)
+  "Return direct child DOM nodes of NODE matching TAG."
+  (seq-filter (lambda (child)
+                (and (listp child)
+                     (eq (dom-tag child) tag)))
+              (dom-children node)))
+
+(defun b4x-project--dom-direct-child-text (node tag)
+  "Return trimmed text of NODE's first direct child TAG, or nil."
+  (when-let ((child (car (b4x-project--dom-direct-children node tag))))
+    (string-trim (dom-text child))))
+
+(defun b4x-project--dom-tag-local-name (node)
+  "Return the local XML tag name of NODE as a string, or nil."
+  (when-let ((tag (and (listp node) (dom-tag node))))
+    (let ((s (format "%s" tag)))
+      (if (string-match (rx (group (+ (not (any ":}")))) eos) s)
+          (match-string 1 s)
+        s))))
+
+(defun b4x-project--dom-direct-children-local (node local-name)
+  "Return direct child DOM nodes of NODE matching LOCAL-NAME.
+
+LOCAL-NAME is compared against the XML local tag name, ignoring namespaces."
+  (seq-filter (lambda (child)
+                (and (listp child)
+                     (string= (b4x-project--dom-tag-local-name child)
+                              local-name)))
+              (dom-children node)))
+
+(defun b4x-project--dom-direct-child-text-local (node local-name)
+  "Return trimmed text of NODE's first direct child LOCAL-NAME, or nil."
+  (when-let ((child (car (b4x-project--dom-direct-children-local
+                          node local-name))))
+    (string-trim (dom-text child))))
+
+(defun b4x-project--library-event-name (text)
+  "Extract the event name from TEXT, or nil."
+  (when (and text
+             (string-match (rx bos (group (+ (any "A-Za-z_")
+                                             (* (any "A-Za-z0-9_")))))
+                           text))
+    (match-string 1 text)))
+
+(defun b4x-project--friendly-type-name (type)
+  "Return a short display name for TYPE."
+  (when type
+    (let ((trimmed (string-trim type)))
+      (if (string-match (rx (group (+ (not (any "." "$")))) eos) trimmed)
+          (match-string 1 trimmed)
+        trimmed))))
+
+(defun b4x-project--parse-library-parameter (node)
+  "Parse one XML parameter NODE into `b4x-library-parameter'."
+  (make-b4x-library-parameter
+   :name (b4x-project--dom-direct-child-text node 'name)
+   :type (b4x-project--dom-direct-child-text node 'type)))
+
+(defun b4x-project--parse-library-member (node kind)
+  "Parse one XML library member NODE of KIND."
+  (let ((signature (string-trim (dom-text node))))
+    (make-b4x-library-member
+     :name (or (b4x-project--dom-direct-child-text node 'name)
+               (and (eq kind 'event)
+                    (b4x-project--library-event-name signature)))
+     :kind kind
+     :signature (unless (string-empty-p signature) signature)
+     :returntype (b4x-project--dom-direct-child-text node 'returntype)
+     :parameters (mapcar #'b4x-project--parse-library-parameter
+                         (b4x-project--dom-direct-children node 'parameter))
+     :comment (b4x-project--dom-direct-child-text node 'comment))))
+
+(defun b4x-project--parse-library-class (node)
+  "Parse one library XML class NODE into `b4x-library-class'."
+  (let* ((method-details (delq nil
+                               (mapcar (lambda (method)
+                                         (b4x-project--parse-library-member method 'method))
+                                       (b4x-project--dom-direct-children node 'method))))
+         (property-details (delq nil
+                                 (mapcar (lambda (property)
+                                           (b4x-project--parse-library-member property 'property))
+                                         (b4x-project--dom-direct-children node 'property))))
+         (event-details (delq nil
+                              (mapcar (lambda (event)
+                                        (b4x-project--parse-library-member event 'event))
+                                      (b4x-project--dom-direct-children node 'event)))))
+    (make-b4x-library-class
+     :shortname (b4x-project--dom-direct-child-text node 'shortname)
+     :full-name (b4x-project--dom-direct-child-text node 'name)
+     :objectwrapper (b4x-project--dom-direct-child-text node 'objectwrapper)
+     :comment (b4x-project--dom-direct-child-text node 'comment)
+     :owner (b4x-project--dom-direct-child-text node 'owner)
+     :methods (delete-dups (delq nil (mapcar #'b4x-library-member-name method-details)))
+     :properties (delete-dups (delq nil (mapcar #'b4x-library-member-name property-details)))
+     :events (delete-dups (delq nil (mapcar #'b4x-library-member-name event-details)))
+     :method-details method-details
+     :property-details property-details
+     :event-details event-details)))
+
+(defun b4x-project--parse-xml-root (xml-path)
+  "Parse XML-PATH and return its DOM root node."
+  (with-temp-buffer
+    (insert-file-contents xml-path)
+    (let ((parsed (if (fboundp 'libxml-parse-xml-region)
+                      (libxml-parse-xml-region (point-min) (point-max))
+                    (xml-parse-region (point-min) (point-max)))))
+      (if (and (listp parsed)
+               (not (eq (car-safe parsed) 'root))
+               (listp (car-safe parsed)))
+          (car parsed)
+        parsed))))
+
+(defun b4x-project-parse-library-api (library)
+  "Parse XML metadata for LIBRARY and return a `b4x-library-api', or nil."
+  (when-let ((xml-path (b4x-project-library-xml-path library)))
+    (or (gethash xml-path b4x-project--library-api-cache)
+        (let* ((root (b4x-project--parse-xml-root xml-path))
+               (api (make-b4x-library-api
+                     :library library
+                     :xml-path xml-path
+                     :version (b4x-project--dom-direct-child-text root 'version)
+                     :author (b4x-project--dom-direct-child-text root 'author)
+                     :classes (delq nil
+                                    (mapcar #'b4x-project--parse-library-class
+                                            (b4x-project--dom-direct-children
+                                             root 'class))))))
+          (puthash xml-path api b4x-project--library-api-cache)
+          api))))
+
+(defun b4x-project-library-apis (project)
+  "Return parsed XML metadata for the libraries referenced by PROJECT."
+  (delq nil
+        (mapcar (lambda (name)
+                  (when-let ((lib (b4x-project-find-available-library project name)))
+                    (b4x-project-parse-library-api lib)))
+                (b4x-project-libraries project))))
+
+(defun b4x-project--library-api-stamp (api)
+  "Return a cache stamp for parsed library API API."
+  (let* ((xml (b4x-library-api-xml-path api))
+         (attrs (and xml (file-attributes xml)))
+         (mtime (and attrs (file-attribute-modification-time attrs))))
+    (list xml mtime)))
+
+(defun b4x-project--library-symbol-index (project)
+  "Return cached XML library completion/doc index for PROJECT.
+
+The result is a plist with `:candidates' and `:infos' (downcased symbol name ->
+list of metadata plists).  It avoids repeatedly walking every XML class/member
+while completion UIs ask for annotations and documentation as the user moves
+between candidates."
+  (let* ((apis (b4x-project-library-apis project))
+         (key (list (b4x-project-project-file project)
+                    (b4x-project-libraries project)
+                    (mapcar #'b4x-project--library-api-stamp apis))))
+    (or (gethash key b4x-project--library-symbol-index-cache)
+        (let ((infos (make-hash-table :test 'equal))
+              candidates)
+          (dolist (api apis)
+            (dolist (class (b4x-library-api-classes api))
+              (when-let ((shortname (b4x-library-class-shortname class)))
+                (push shortname candidates)
+                (push (list :kind 'class
+                            :name shortname
+                            :signature (format "%s" shortname)
+                            :comment (b4x-library-class-comment class)
+                            :class class
+                            :library (b4x-library-api-library api))
+                      (gethash (downcase shortname) infos)))
+              (dolist (member (append (b4x-library-class-method-details class)
+                                      (b4x-library-class-property-details class)
+                                      (b4x-library-class-event-details class)))
+                (when-let ((member-name (b4x-library-member-name member)))
+                  (push member-name candidates)
+                  (push (list :kind (b4x-library-member-kind member)
+                              :name member-name
+                              :signature (b4x-project-format-library-member-signature member class)
+                              :comment (b4x-library-member-comment member)
+                              :class class
+                              :library (b4x-library-api-library api)
+                              :member member)
+                        (gethash (downcase member-name) infos))))))
+          (maphash (lambda (name entries)
+                     (puthash name (nreverse entries) infos))
+                   infos)
+          (let ((index (list :candidates (delete-dups (delq nil candidates))
+                             :infos infos)))
+            (puthash key index b4x-project--library-symbol-index-cache)
+            index)))))
+
+(defun b4x-project-library-completion-candidates (project)
+  "Return completion candidates contributed by PROJECT's library XML metadata."
+  (plist-get (b4x-project--library-symbol-index project) :candidates))
+
+(defun b4x-project-library-class-names (project)
+  "Return the short class/type names exported by PROJECT's referenced libraries."
+  (delete-dups
+   (delq nil
+         (mapcan (lambda (api)
+                   (mapcar #'b4x-library-class-shortname
+                           (b4x-library-api-classes api)))
+                 (b4x-project-library-apis project)))))
+
+(defun b4x-project--format-library-parameters (parameters)
+  "Format library member PARAMETERS for display."
+  (mapconcat (lambda (param)
+               (if-let ((name (b4x-library-parameter-name param)))
+                   (format "%s As %s"
+                           name
+                           (or (b4x-project--friendly-type-name
+                                (b4x-library-parameter-type param))
+                               "Object"))
+                 (or (b4x-project--friendly-type-name
+                      (b4x-library-parameter-type param))
+                     "Object")))
+             parameters ", "))
+
+(defun b4x-project-format-library-member-signature (member &optional class)
+  "Return a human-readable signature for library MEMBER.
+
+Optional CLASS is a `b4x-library-class' used to qualify class names in docs."
+  (pcase (b4x-library-member-kind member)
+    ('event (or (b4x-library-member-signature member)
+                (b4x-library-member-name member)))
+    ('property
+     (format "%s%s"
+             (b4x-library-member-name member)
+             (if-let ((type (b4x-library-member-returntype member)))
+                 (format " As %s" (b4x-project--friendly-type-name type))
+               "")))
+    (_
+     (format "%s(%s)%s"
+             (b4x-library-member-name member)
+             (b4x-project--format-library-parameters
+              (b4x-library-member-parameters member))
+             (if-let ((type (b4x-library-member-returntype member)))
+                 (if (string= (downcase type) "void")
+                     ""
+                   (format " As %s" (b4x-project--friendly-type-name type)))
+               "")))))
+
+(defun b4x-project--first-doc-line (text)
+  "Return TEXT collapsed to its first non-empty line, or nil."
+  (when text
+    (car (seq-filter (lambda (line) (not (string-empty-p line)))
+                     (mapcar #'string-trim (split-string text "\r?\n" t))))))
+
+(defun b4x-project-library-symbol-infos (project name)
+  "Return library XML metadata entries for symbol NAME in PROJECT.
+
+Each entry is a plist with keys including `:kind', `:signature', `:comment',
+`:class', and `:library'."
+  (copy-sequence
+   (gethash (downcase name)
+            (plist-get (b4x-project--library-symbol-index project) :infos))))
+
+(defun b4x-project-library-symbol-info (project name)
+  "Return the first library XML metadata entry for symbol NAME in PROJECT." 
+  (car (b4x-project-library-symbol-infos project name)))
+
+(defun b4x-project-library-symbol-annotation (project name)
+  "Return a short completion annotation for symbol NAME in PROJECT, or nil."
+  (when-let ((info (b4x-project-library-symbol-info project name)))
+    (format " [%s%s]"
+            (plist-get info :kind)
+            (if-let ((class (and (not (eq (plist-get info :kind) 'class))
+                                 (b4x-library-class-shortname
+                                  (plist-get info :class)))))
+                (format ":%s" class)
+              ""))))
+
+(defun b4x-project-library-symbol-doc (project name &optional multiline)
+  "Return library XML documentation for symbol NAME in PROJECT, or nil.
+
+When MULTILINE is non-nil, keep the full comment body; otherwise keep the first
+line only." 
+  (when-let ((info (b4x-project-library-symbol-info project name)))
+    (let* ((signature (plist-get info :signature))
+           (comment (plist-get info :comment))
+           (summary (if multiline comment (b4x-project--first-doc-line comment)))
+           (lib (plist-get info :library))
+           (libname (and lib (b4x-library-name lib))))
+      (string-join
+       (delq nil (list signature
+                       (and summary (if multiline
+                                        summary
+                                      (format "— %s" summary)))
+                       (and multiline libname (format "\nLibrary: %s" libname))))
+       (if multiline "\n" " ")))))
+
+(defun b4x-project--find-pom-files (dir)
+  "Return Maven POM files found recursively under DIR."
+  (when (and dir (file-directory-p dir))
+    (directory-files-recursively dir (rx (or "pom.xml" (+ (not (any "/"))) ".pom") eos)
+                                 nil nil t)))
+
+(defun b4x-project--pom-value (root local-name)
+  "Return the direct LOCAL-NAME text from Maven POM ROOT, or nil."
+  (b4x-project--dom-direct-child-text-local root local-name))
+
+(defun b4x-project--parse-pom-root (pom-path)
+  "Parse POM-PATH and return its DOM root node."
+  (b4x-project--parse-xml-root pom-path))
+
+(defun b4x-project-parse-library-pom (pom-path source)
+  "Parse Maven POM-PATH discovered in SOURCE and return `b4x-library-pom'."
+  (or (gethash pom-path b4x-project--library-pom-cache)
+      (let* ((root (b4x-project--parse-pom-root pom-path))
+             (parent (car (b4x-project--dom-direct-children-local root "parent")))
+             (pom (make-b4x-library-pom
+                   :path pom-path
+                   :source source
+                   :group-id (or (b4x-project--pom-value root "groupId")
+                                 (and parent (b4x-project--pom-value parent "groupId")))
+                   :artifact-id (b4x-project--pom-value root "artifactId")
+                   :version (or (b4x-project--pom-value root "version")
+                                (and parent (b4x-project--pom-value parent "version")))
+                   :packaging (b4x-project--pom-value root "packaging")
+                   :name (b4x-project--pom-value root "name")
+                   :description (b4x-project--pom-value root "description"))))
+        (puthash pom-path pom b4x-project--library-pom-cache)
+        pom)))
+
+(defun b4x-project-library-poms (project)
+  "Return all Maven POM metadata discovered for PROJECT's library folders."
+  (let ((seen (make-hash-table :test 'equal))
+        out)
+    (dolist (entry (b4x-project-library-dirs project))
+      (pcase-let ((`(,source . ,dir) entry))
+        (dolist (pom (or (b4x-project--find-pom-files dir) nil))
+          (unless (gethash pom seen)
+            (puthash pom t seen)
+            (push (b4x-project-parse-library-pom pom source) out)))))
+    (sort (delq nil out)
+          (lambda (a b)
+            (string< (or (b4x-library-pom-artifact-id a)
+                         (file-name-nondirectory (b4x-library-pom-path a)))
+                     (or (b4x-library-pom-artifact-id b)
+                         (file-name-nondirectory (b4x-library-pom-path b))))))))
+
+(defun b4x-project-find-library-pom (project library-or-name)
+  "Return the Maven POM best matching LIBRARY-OR-NAME in PROJECT, or nil."
+  (let* ((name (downcase (if (b4x-library-p library-or-name)
+                             (b4x-library-name library-or-name)
+                           library-or-name)))
+         (library (if (b4x-library-p library-or-name)
+                      library-or-name
+                    (b4x-project-find-available-library project library-or-name)))
+         (base (and library (downcase (file-name-base (b4x-library-path library))))))
+    (seq-find (lambda (pom)
+                (let ((artifact (and (b4x-library-pom-artifact-id pom)
+                                     (downcase (b4x-library-pom-artifact-id pom))))
+                      (pom-base (downcase (file-name-base (b4x-library-pom-path pom)))))
+                  (or (and artifact (or (string= artifact name)
+                                        (and base (string= artifact base))))
+                      (string= pom-base name)
+                      (and base (string= pom-base base)))))
+              (b4x-project-library-poms project))))
 
 
 ;;; Layouts & Files

@@ -191,9 +191,12 @@ Typical first session:
 2. `C-c C-i` to verify the parsed model (modules, libraries, INI).
 3. Edit `.bas` files; `M-.` / `M-?` to navigate; `M-TAB` to complete; flymake
    shows duplicate-symbol/type-placement warnings.
-4. `C-c C-c` to build under Wine; output lands in a `compilation-mode` buffer.
-5. `C-c C-r` to run the jar.
-6. `C-c C-e` to pop open the official B4X IDE under Wine (detached).
+4. Use completion: project symbols + keywords + library XML metadata + indexed `.b4xlib` symbols from referenced core / Additional Libs.
+5. `C-c C-c` to build under Wine; output lands in a `compilation-mode` buffer.
+6. `M-x b4x-list-available-libraries` to inspect core / Additional Libs.
+7. In that buffer, use `RET` / click to toggle a library, `a` to add, `r`/`k` to remove.
+8. `C-c C-r` to run the jar.
+9. `C-c C-e` to pop open the official B4X IDE under Wine (detached).
 
 ## Cheatsheet — commands & key bindings
 
@@ -210,9 +213,12 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | Key | Command | Description |
 | --- | --- | --- |
 | `C-c C-o` | `b4x-open-project` | Load a project (auto-detected or prompted). |
-| `C-c C-i` | `b4x-project-info` | Show modules, libraries, INI, root in a buffer. |
+| `C-c C-i` | `b4x-project-info` | Show modules, libraries, INI, root, and indexed POM count in a buffer. |
 | `C-c C-v` | `b4x-version` | Show the loaded package version and the exact file path Emacs is executing. |
 | `C-c C-n` | `b4x-new-module` | Create/register a new module in the current B4J/B4A project (`Static Code`, `Class`, `B4XPage`; plus `Service` on B4A). |
+| `M-x b4x-list-available-libraries` / `C-c C-d S` | `b4x-list-available-libraries` | List all libraries visible from the core and Additional Libs folders, including source, kind, and path. The list buffer is clickable and supports `RET`, `a`, `r`/`k`, and `g`. |
+| `C-c C-s` | `b4x-add-library` | Add a library from the core or Additional Libs folders to the current project. |
+| `C-c C-k` | `b4x-remove-library` | Remove a library from the current project. |
 | `C-c C-m` | `b4x-switch-module` | Jump to another module (completing-read). |
 
 ### Navigation & intelligence (native Emacs)
@@ -221,9 +227,9 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | --- | --- | --- |
 | `M-.` | `xref-find-definitions` | Go to Sub/Type/global definition (B4X xref backend). |
 | `M-?` | `xref-find-references` | Find references across project modules. |
-| `M-TAB` / `C-M-i` | `completion-at-point` | Complete symbols + keywords. |
+| `M-TAB` / `C-M-i` | `completion-at-point` | Complete project symbols + keywords + XML metadata + indexed `.b4xlib` symbols from referenced libraries. Library candidates expose annotations/doc when the frontend supports them. |
 | `M-x imenu` | `b4x-imenu-index` | Browse Subs / Types / Globals of the buffer. |
-| — (eldoc) | `b4x-eldoc-function` | Sub signature in the echo area. |
+| — (eldoc) | `b4x-eldoc-function` | Sub signature in the echo area, with fallback to library XML / `.b4xlib` signatures/docs. |
 | — (flymake) | `b4x-flymake` | Duplicate-symbol + type-placement warnings. |
 
 ### Layouts

@@ -4,7 +4,7 @@
 
 ;; Author: emacs-b4x-integration
 ;; Keywords: languages, tools
-;; Version: 0.3.1
+;; Version: 0.3.10
 ;; Package-Requires: ((emacs "28.1"))
 ;; SPDX-License-Identifier: MIT
 
@@ -30,6 +30,9 @@
 ;;   C-c C-o   open project
 ;;   C-c C-i   project info
 ;;   C-c C-n   create a new B4J module and register it in the project
+;;   C-c C-s   add a library from core / Additional Libs
+;;   C-c C-k   remove a library from the current project
+;;   M-x b4x-list-available-libraries   list available libraries (clickable)
 ;;   C-c C-m   switch module
 ;;   C-c C-l   jump to layout (from `LoadLayout("...")' or via completion)
 ;;   C-c C-c   build
@@ -42,6 +45,7 @@
 (require 'subr-x)
 (require 'seq)
 (require 'project)
+(require 'button)
 (require 'transient)
 (require 'b4x-wine)
 (require 'b4x-project)
@@ -56,7 +60,7 @@
   :group 'languages
   :link '(url-link "https://github.com/emacs-b4x-integration"))
 
-(defconst b4x-package-version "0.3.1"
+(defconst b4x-package-version "0.3.10"
   "Version string of the loaded B4X Emacs package.")
 
 (defun b4x-version-string ()
@@ -222,6 +226,8 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
     (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
     (define-key map (kbd "C-c C-m") #'b4x-switch-module)
     (define-key map (kbd "C-c C-n") #'b4x-new-module)
+    (define-key map (kbd "C-c C-s") #'b4x-add-library)
+    (define-key map (kbd "C-c C-k") #'b4x-remove-library)
     (define-key map (kbd "C-c C-d") #'b4x-dispatch)
     (define-key map (kbd "C-c a i") #'b4x-b4a-install-apk)
     (define-key map (kbd "C-c a l") #'b4x-b4a-launch-app)
@@ -280,6 +286,88 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
   (when (derived-mode-p 'b4x-mode)
     'b4x))
 
+(defvar-local b4x--libraries-project-file nil
+  "Project file associated with the current `b4x-libraries-mode' buffer.")
+
+(defvar b4x-libraries-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "g") #'b4x-list-available-libraries)
+    (define-key map (kbd "a") #'b4x-libraries-add-at-point)
+    (define-key map (kbd "r") #'b4x-libraries-remove-at-point)
+    (define-key map (kbd "k") #'b4x-libraries-remove-at-point)
+    (define-key map (kbd "RET") #'b4x-libraries-activate)
+    map)
+  "Keymap for `b4x-libraries-mode'.")
+
+(define-derived-mode b4x-libraries-mode special-mode "B4X-Libraries"
+  "Mode used by `b4x-list-available-libraries'.")
+
+(defun b4x--libraries-buffer-project ()
+  "Return the project associated with the current libraries buffer."
+  (unless (and b4x--libraries-project-file
+               (file-regular-p b4x--libraries-project-file))
+    (user-error "This libraries buffer is not attached to a live B4X project"))
+  (b4x-load-project b4x--libraries-project-file))
+
+(defun b4x--libraries-button-at-point ()
+  "Return the library button at point, or nil."
+  (button-at (point)))
+
+(defun b4x--libraries-refresh-current-buffer ()
+  "Refresh the current `b4x-libraries-mode' buffer."
+  (let ((project-file b4x--libraries-project-file))
+    (unless project-file
+      (user-error "No project attached to this libraries buffer"))
+    (b4x-list-available-libraries project-file)))
+
+(defun b4x--libraries-handle-button (button action)
+  "Apply ACTION to BUTTON's library and refresh the libraries buffer."
+  (let* ((proj (b4x--libraries-buffer-project))
+         (name (button-get button 'b4x-library-name))
+         (present (button-get button 'b4x-library-present)))
+    (pcase action
+      ('add
+       (if present
+           (message "B4X: library already present: %s" name)
+         (b4x--add-library-to-project proj name)
+         (message "B4X: added library %s" name)))
+      ('remove
+       (if present
+           (progn
+             (b4x--remove-library-from-project proj name)
+             (message "B4X: removed library %s" name))
+         (message "B4X: library not present: %s" name)))
+      ('toggle
+       (if present
+           (progn
+             (b4x--remove-library-from-project proj name)
+             (message "B4X: removed library %s" name))
+         (b4x--add-library-to-project proj name)
+         (message "B4X: added library %s" name)))))
+  (b4x--libraries-refresh-current-buffer))
+
+(defun b4x-libraries-activate ()
+  "Toggle the library at point in a libraries buffer."
+  (interactive)
+  (if-let ((button (b4x--libraries-button-at-point)))
+      (b4x--libraries-handle-button button 'toggle)
+    (user-error "No library at point")))
+
+(defun b4x-libraries-add-at-point ()
+  "Add the library at point to the project."
+  (interactive)
+  (if-let ((button (b4x--libraries-button-at-point)))
+      (b4x--libraries-handle-button button 'add)
+    (user-error "No library at point")))
+
+(defun b4x-libraries-remove-at-point ()
+  "Remove the library at point from the project."
+  (interactive)
+  (if-let ((button (b4x--libraries-button-at-point)))
+      (b4x--libraries-handle-button button 'remove)
+    (user-error "No library at point")))
+
 
 ;;; auto-mode
 
@@ -333,6 +421,72 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
     (ignore-errors
       (b4x--remember-project proj))))
 
+(defun b4x--library-source-label (source)
+  "Return a human-readable label for library SOURCE." 
+  (pcase source
+    ('core "core")
+    ('additional "additional")
+    (_ "unknown")))
+
+(defun b4x--project-library-lines (proj)
+  "Return formatted lines describing the libraries currently added to PROJ."
+  (let ((libs (b4x-project-libraries proj)))
+    (if (null libs)
+        '("  - (none)\n")
+      (mapcar (lambda (name)
+                (if-let ((lib (b4x-project-find-available-library proj name)))
+                    (format "  - %s [%s]\n"
+                            name
+                            (b4x--library-source-label
+                             (b4x-library-source lib)))
+                  (format "  - %s [missing]\n" name)))
+              libs))))
+
+(defun b4x--project-library-present-p (proj name)
+  "Return non-nil if PROJ already references library NAME."
+  (member (downcase name)
+          (mapcar #'downcase (b4x-project-libraries proj))))
+
+(defun b4x--available-library-lines (proj)
+  "Return formatted lines for all libraries available to PROJ."
+  (let ((libs (b4x-project-available-libraries proj)))
+    (if (null libs)
+        '("  - (none)\n")
+      (mapcar (lambda (lib)
+                (format "%s %-24s [%-10s %-6s] %s\n"
+                        (if (b4x--project-library-present-p proj
+                                                           (b4x-library-name lib))
+                            "*" " ")
+                        (b4x-library-name lib)
+                        (b4x--library-source-label (b4x-library-source lib))
+                        (symbol-name (b4x-library-kind lib))
+                        (b4x-library-path lib)))
+              libs))))
+
+(defun b4x--insert-available-library-entry (proj lib)
+  "Insert one clickable available-library entry for PROJ and LIB."
+  (let* ((present (b4x--project-library-present-p proj (b4x-library-name lib)))
+         (line (format "%s %-24s [%-10s %-6s] %s"
+                       (if present "*" " ")
+                       (b4x-library-name lib)
+                       (b4x--library-source-label (b4x-library-source lib))
+                       (symbol-name (b4x-library-kind lib))
+                       (b4x-library-path lib)))
+         (button (insert-text-button
+                  line
+                  'follow-link t
+                  'help-echo (if present
+                                 "mouse-1/RET: remove library from project"
+                               "mouse-1/RET: add library to project")
+                  'action (lambda (btn)
+                            (with-current-buffer (button-buffer btn)
+                              (goto-char (button-start btn))
+                              (b4x--libraries-handle-button btn 'toggle)))
+                  'b4x-library-name (b4x-library-name lib)
+                  'b4x-library-present present)))
+    (button-put button 'face (if present 'success 'default))
+    (insert "\n")))
+
 ;;;###autoload
 (defun b4x-open-project (project-file)
   "Open the B4X project at PROJECT-FILE and visit its first module."
@@ -357,7 +511,16 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
 (defun b4x-project-info ()
   "Display the parsed model of the current B4X project in a buffer."
   (interactive)
-  (let ((proj (b4x--current-project)))
+  (let* ((proj (b4x--current-project))
+         (library-dirs (b4x-project-library-dirs proj))
+         (available (b4x-project-available-libraries proj))
+         (pom-count (length (b4x-project-library-poms proj)))
+         (core-count (cl-count-if (lambda (lib)
+                                    (eq (b4x-library-source lib) 'core))
+                                  available))
+         (additional-count (cl-count-if (lambda (lib)
+                                          (eq (b4x-library-source lib) 'additional))
+                                        available)))
     (with-current-buffer (get-buffer-create "*B4X Project*")
       (let ((inhibit-read-only t))
         (erase-buffer)
@@ -368,15 +531,57 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
         (insert (format "Version:    %s\n" (or (b4x-project-version proj) "-")))
         (insert (format "Root:       %s\n" (b4x-project-root-dir proj)))
         (insert (format "INI:        %s\n" (or (b4x-project-ini-path proj) "-")))
-        (insert (format "Libraries:  %s\n" (b4x-project-libraries proj)))
+        (insert (format "CoreLibs:   %s\n"
+                        (or (cdr (assq 'core library-dirs)) "-")))
+        (insert (format "AddLibs:    %s\n"
+                        (or (cdr (assq 'additional library-dirs)) "-")))
+        (insert (format "Available:  %d core, %d additional\n"
+                        core-count additional-count))
+        (insert (format "POMs:       %d indexed\n" pom-count))
         (when (eq (b4x-project-platform proj) 'b4a)
           (insert (format "AndroidPkg: %s\n" (or (b4x--b4a-build-package proj) "-")))
           (insert (format "APK:        %s\n" (or (b4x--b4a-find-apk proj) "-"))))
+        (insert "\nProject libraries:\n")
+        (dolist (line (b4x--project-library-lines proj))
+          (insert line))
         (insert "\nModules:\n")
         (dolist (m (b4x-project-modules proj))
           (insert (format "  - %s\n" m))))
       (goto-char (point-min))
       (view-mode 1)
+      (display-buffer (current-buffer)))))
+
+;;;###autoload
+(defun b4x-list-available-libraries (&optional project-file)
+  "Display all libraries available to PROJECT-FILE or the current project."
+  (interactive)
+  (let* ((proj (cond
+                (project-file (b4x-load-project project-file))
+                ((derived-mode-p 'b4x-libraries-mode)
+                 (b4x--libraries-buffer-project))
+                (t (b4x--current-project))))
+         (library-dirs (b4x-project-library-dirs proj))
+         (available (b4x-project-available-libraries proj)))
+    (with-current-buffer (get-buffer-create "*B4X Libraries*")
+      (let ((inhibit-read-only t))
+        (b4x-libraries-mode)
+        (setq-local b4x--libraries-project-file (b4x-project-project-file proj))
+        (erase-buffer)
+        (insert (format "Project:   %s\n" (b4x-project-project-file proj)))
+        (insert (format "Platform:  %s\n" (b4x-project-platform proj)))
+        (insert (format "CoreLibs:  %s\n"
+                        (or (cdr (assq 'core library-dirs)) "-")))
+        (insert (format "AddLibs:   %s\n"
+                        (or (cdr (assq 'additional library-dirs)) "-")))
+        (insert (format "Count:     %d\n" (length available)))
+        (insert "\nLegend: * = already added to project\n")
+        (insert "Actions: RET/mouse-1 toggle, a add, r/k remove, g refresh\n")
+        (insert "Format: mark name [source kind] path\n\n")
+        (if available
+            (dolist (lib available)
+              (b4x--insert-available-library-entry proj lib))
+          (insert "  - (none)\n")))
+      (goto-char (point-min))
       (display-buffer (current-buffer)))))
 
 (defconst b4x--new-module-kinds
@@ -493,6 +698,18 @@ Keys: `:bom', `:newline', `:header', `:main'."
   (let ((needle (downcase value)))
     (seq-some (lambda (v) (string= (downcase v) needle))
               (b4x-project--collect-numbered prefix header))))
+
+(defun b4x--header-remove-numbered (prefix header)
+  "Return HEADER without any `<PREFIX>N=' entries."
+  (seq-remove (lambda (entry)
+                (b4x-project--index-value prefix (car entry)))
+              header))
+
+(defun b4x--header-replace-numbered (prefix values header before-key)
+  "Replace HEADER's `<PREFIX>N=' entries with VALUES before BEFORE-KEY."
+  (let ((out (b4x--header-remove-numbered prefix header)))
+    (dolist (value values out)
+      (setq out (b4x--header-add-numbered prefix value out before-key)))))
 
 (defun b4x--header-string (header newline)
   "Render HEADER back to text using NEWLINE." 
@@ -699,6 +916,109 @@ file."
              (if (eq kind 'b4xpage)
                  " — uncomment/create the layout when ready"
                ""))))
+
+(defun b4x--available-library-choices (proj)
+  "Return completion choices for libraries that can still be added to PROJ."
+  (let ((present (mapcar #'downcase (b4x-project-libraries proj))))
+    (mapcar (lambda (lib)
+              (cons (format "%s [%s]"
+                            (b4x-library-name lib)
+                            (b4x--library-source-label
+                             (b4x-library-source lib)))
+                    (b4x-library-name lib)))
+            (seq-remove (lambda (lib)
+                          (member (b4x-library-canonical-name lib) present))
+                        (b4x-project-available-libraries proj)))))
+
+(defun b4x--read-library-name (proj)
+  "Prompt for an available library name for PROJ."
+  (let ((choices (b4x--available-library-choices proj)))
+    (when (null choices)
+      (user-error "No more libraries available to add"))
+    (cdr (assoc (completing-read "Add library: " choices nil t) choices))))
+
+(defun b4x--current-library-choices (proj)
+  "Return completion choices for libraries currently referenced by PROJ."
+  (mapcar (lambda (name)
+            (if-let ((lib (b4x-project-find-available-library proj name)))
+                (cons (format "%s [%s]"
+                              name
+                              (b4x--library-source-label
+                               (b4x-library-source lib)))
+                      name)
+              (cons (format "%s [missing]" name) name)))
+          (b4x-project-libraries proj)))
+
+(defun b4x--read-current-library-name (proj)
+  "Prompt for a currently added library name from PROJ."
+  (let ((choices (b4x--current-library-choices proj)))
+    (when (null choices)
+      (user-error "Project has no libraries to remove"))
+    (cdr (assoc (completing-read "Remove library: " choices nil t) choices))))
+
+(defun b4x--add-library-to-project (proj library-name)
+  "Add LIBRARY-NAME to PROJ's `LibraryN=' header entries.
+
+Returns LIBRARY-NAME when it was added, nil when it was already present."
+  (pcase-let* ((project-file (b4x-project-project-file proj))
+               (`(:bom ,bom :newline ,newline :header ,header :main ,main)
+                (b4x--project-file-components project-file)))
+    (if (b4x--header-has-numbered-value "Library" library-name header)
+        nil
+      (setq header (b4x--header-add-numbered "Library" library-name header "NumberOfLibraries"))
+      (setq header (b4x--header-set "NumberOfLibraries"
+                                    (number-to-string
+                                     (length (b4x-project--collect-numbered "Library" header)))
+                                    header))
+      (b4x--write-project-header project-file header main newline bom)
+      (b4x-nav--clear-cache)
+      library-name)))
+
+(defun b4x--remove-library-from-project (proj library-name)
+  "Remove LIBRARY-NAME from PROJ's `LibraryN=' header entries.
+
+Returns LIBRARY-NAME when it was removed, nil when it was not present."
+  (pcase-let* ((project-file (b4x-project-project-file proj))
+               (`(:bom ,bom :newline ,newline :header ,header :main ,main)
+                (b4x--project-file-components project-file))
+               (libs (b4x-project--collect-numbered "Library" header))
+               (needle (downcase library-name))
+               (remaining (seq-remove (lambda (name)
+                                        (string= (downcase name) needle))
+                                      libs)))
+    (if (= (length remaining) (length libs))
+        nil
+      (setq header (b4x--header-replace-numbered "Library" remaining header "NumberOfLibraries"))
+      (setq header (b4x--header-set "NumberOfLibraries"
+                                    (number-to-string (length remaining))
+                                    header))
+      (b4x--write-project-header project-file header main newline bom)
+      (b4x-nav--clear-cache)
+      library-name)))
+
+;;;###autoload
+(defun b4x-add-library (library-name)
+  "Add LIBRARY-NAME from core / Additional Libs to the current project."
+  (interactive
+   (let ((proj (b4x--current-project)))
+     (list (b4x--read-library-name proj))))
+  (let* ((proj (b4x--current-project))
+         (added (b4x--add-library-to-project proj library-name)))
+    (if added
+        (message "B4X: added library %s" added)
+      (message "B4X: library already present: %s" library-name))))
+
+;;;###autoload
+(defun b4x-remove-library (library-name)
+  "Remove LIBRARY-NAME from the current project."
+  (interactive
+   (let ((proj (b4x--current-project)))
+     (list (b4x--read-current-library-name proj))))
+  (let* ((proj (b4x--current-project))
+         (removed (b4x--remove-library-from-project proj library-name)))
+    (if removed
+        (message "B4X: removed library %s" removed)
+      (message "B4X: library not present: %s" library-name))))
 
 
 ;;; Build / Run (delegated to the vendored scripts)
@@ -1162,8 +1482,11 @@ at point that matches a declared layout."
   [["Project"
     ("o" "Open project"       b4x-open-project)
     ("i" "Project info"        b4x-project-info)
+    ("S" "List libraries"      b4x-list-available-libraries)
     ("v" "Version"             b4x-version)
     ("n" "New module"          b4x-new-module)
+    ("s" "Add library"         b4x-add-library)
+    ("k" "Remove library"      b4x-remove-library)
     ("m" "Switch module"       b4x-switch-module)
     ("l" "Jump to layout"      b4x-goto-layout)]
    ["Build & Run"
