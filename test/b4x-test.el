@@ -20,6 +20,10 @@
   (expand-file-name "~/dev/B4XProj/jetty12-Test/jetty12-Test.b4j")
   "Another real B4J project (flat layout, no platform subfolder).")
 
+(defconst b4x-test--emacs-testing
+  (expand-file-name "~/dev/B4XProj/emacs-testing/B4J/emacs-testing.b4j")
+  "Real multi-platform B4XPages project with shared root + B4J subfolder.")
+
 (defun b4x-test--project-exists-p (file)
   "Non-nil if FILE exists on disk (skips tests otherwise)."
   (and file (file-regular-p file)))
@@ -137,6 +141,28 @@
       (should (equal (b4x-project-root-dir proj)
                      (directory-file-name
                       (file-name-directory b4x-test--jetty)))))))
+
+(ert-deftest b4x-project/emacs-testing-b4xpages-layout ()
+  (b4x-test-skip-unless b4x-test--emacs-testing
+    (let* ((proj (b4x-load-project b4x-test--emacs-testing))
+           (root (expand-file-name "~/dev/B4XProj/emacs-testing"))
+           (layouts (b4x-project-layout-files proj)))
+      (should (eq (b4x-project-platform proj) 'b4j))
+      (should (equal (b4x-project-root-dir proj) root))
+      (should (equal (b4x-project-app-type proj) "JavaFX"))
+      (should (member (expand-file-name "~/dev/B4XProj/emacs-testing/B4XMainPage.bas")
+                      (b4x-project-modules proj)))
+      (should (assoc "MainPage" layouts))
+      (should (equal (cdr (assoc "MainPage" layouts))
+                     (expand-file-name "~/dev/B4XProj/emacs-testing/B4J/Files/MainPage.bjl"))))))
+
+(ert-deftest b4x-project/emacs-testing-project-current-from-shared-and-layout ()
+  (b4x-test-skip-unless b4x-test--emacs-testing
+    (dolist (dir (list (file-name-directory "~/dev/B4XProj/emacs-testing/B4XMainPage.bas")
+                       (file-name-directory "~/dev/B4XProj/emacs-testing/B4J/Files/MainPage.bjl")
+                       (file-name-directory b4x-test--emacs-testing)))
+      (should (equal (project-current nil (expand-file-name dir))
+                     '(b4x . "/home/devgiu/dev/B4XProj/emacs-testing"))))))
 
 (provide 'b4x-test)
 ;;; b4x-test.el ends here
