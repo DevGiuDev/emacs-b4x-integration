@@ -29,6 +29,7 @@
 ;;   C-c C-d   dispatch menu (transient)
 ;;   C-c C-o   open project
 ;;   C-c C-i   project info
+;;   C-c C-n   create a new B4J module and register it in the project
 ;;   C-c C-m   switch module
 ;;   C-c C-l   jump to layout (from `LoadLayout("...")' or via completion)
 ;;   C-c C-c   build
@@ -158,6 +159,7 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
     (define-key map (kbd "C-c C-i") #'b4x-project-info)
     (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
     (define-key map (kbd "C-c C-m") #'b4x-switch-module)
+    (define-key map (kbd "C-c C-n") #'b4x-new-module)
     (define-key map (kbd "C-c C-d") #'b4x-dispatch)
     map)
   "Keymap for `b4x-mode'.")
@@ -289,6 +291,259 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
       (goto-char (point-min))
       (view-mode 1)
       (display-buffer (current-buffer)))))
+
+(defconst b4x--new-module-kinds
+  '((static . "Static Code")
+    (class . "Class")
+    (b4xpage . "B4XPage"))
+  "Kinds supported by `b4x-new-module'.")
+
+(defun b4x--module-name-p (name)
+  "Return non-nil if NAME is a valid B4X module identifier." 
+  (string-match-p (rx bos (or "_" alpha) (* (or "_" alnum)) eos) name))
+
+(defun b4x--ensure-clean-visiting-buffer (file)
+  "Signal an error if FILE is visited by a modified buffer." 
+  (when-let ((buf (find-buffer-visiting file)))
+    (when (buffer-modified-p buf)
+      (user-error "Buffer has unsaved changes: %s" file))))
+
+(defun b4x--write-file-preserving-buffers (file text)
+  "Write TEXT to FILE, updating its visiting buffer if needed." 
+  (b4x--ensure-clean-visiting-buffer file)
+  (if-let ((buf (find-buffer-visiting file)))
+      (with-current-buffer buf
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert text)
+          (save-buffer)))
+    (with-temp-file file
+      (insert text))))
+
+(defun b4x--project-file-components (project-file)
+  "Return plist describing PROJECT-FILE header/body formatting.
+
+Keys: `:bom', `:newline', `:header', `:main'."
+  (let* ((text (with-temp-buffer
+                 (insert-file-contents project-file)
+                 (buffer-string)))
+         (bom (and (> (length text) 0) (eq (aref text 0) ?﻿)))
+         (body (if bom (substring text 1) text))
+         (newline (if (string-match-p "\r\n" body) "\r\n" "\n"))
+         (parsed (b4x-project--parse-header body)))
+    (list :bom bom :newline newline :header (car parsed) :main (cdr parsed))))
+
+(defun b4x--header-max-index (prefix header)
+  "Return the maximum numeric suffix for PREFIX in HEADER, or 0." 
+  (let ((max 0))
+    (dolist (entry header max)
+      (when-let ((n (b4x-project--index-value prefix (car entry))))
+        (setq max (max max n))))))
+
+(defun b4x--header-set (key value header)
+  "Set KEY to VALUE in HEADER, preserving its position when possible." 
+  (if-let ((cell (assoc key header)))
+      (progn (setcdr cell value) header)
+    (append header (list (cons key value)))))
+
+(defun b4x--header-insert-before (header before-key entry)
+  "Insert ENTRY in HEADER before BEFORE-KEY, or append if absent." 
+  (let (out done)
+    (dolist (it header)
+      (when (and (not done) (string= (car it) before-key))
+        (push entry out)
+        (setq done t))
+      (push it out))
+    (unless done
+      (push entry out))
+    (nreverse out)))
+
+(defun b4x--header-add-numbered (prefix value header before-key)
+  "Add a new `<PREFIX>N=VALUE' entry to HEADER before BEFORE-KEY." 
+  (let ((entry (cons (format "%s%d" prefix (1+ (b4x--header-max-index prefix header)))
+                     value)))
+    (b4x--header-insert-before header before-key entry)))
+
+(defun b4x--header-has-numbered-value (prefix value header)
+  "Return non-nil if HEADER already has `<PREFIX>N=VALUE' (case-insensitive)." 
+  (let ((needle (downcase value)))
+    (seq-some (lambda (v) (string= (downcase v) needle))
+              (b4x-project--collect-numbered prefix header))))
+
+(defun b4x--header-string (header newline)
+  "Render HEADER back to text using NEWLINE." 
+  (mapconcat (lambda (entry)
+               (format "%s=%s" (car entry) (cdr entry)))
+             header newline))
+
+(defun b4x--write-project-header (project-file header main newline bom)
+  "Rewrite PROJECT-FILE from HEADER and MAIN, preserving NEWLINE/BOM." 
+  (b4x--write-file-preserving-buffers
+   project-file
+   (concat (if bom "﻿" "")
+           (b4x--header-string header newline)
+           newline
+           b4x-project--design-marker
+           main)))
+
+(defun b4x--module-header-defaults (proj)
+  "Return plist of default header values inferred from PROJ's modules." 
+  (let* ((sample (car (b4x-project-modules proj)))
+         (sample-header
+          (when (and sample (file-regular-p sample))
+            (car (b4x-project--parse-header
+                  (with-temp-buffer
+                    (insert-file-contents sample)
+                    (buffer-string))))))
+         (platform-key
+          (pcase (b4x-project-platform proj)
+            ('b4j "B4J")
+            ('b4a "B4A")
+            ('b4i "B4i")
+            ('b4r "B4R")
+            (_ (upcase (symbol-name (b4x-project-platform proj)))))))
+    (list :platform-key platform-key
+          :group (or (b4x-project--first-value "Group" sample-header)
+                     "Default Group")
+          :modules-structure-version (or (b4x-project--first-value "ModulesStructureVersion" sample-header)
+                                         "1")
+          :version (or (b4x-project--first-value "Version" sample-header)
+                       (b4x-project-version proj)
+                       "10.5"))))
+
+(defun b4x--module-target (proj name)
+  "Return (FILE . MODULE-SPEC) for a new module NAME in PROJ." 
+  (let* ((target-dir (if (equal (b4x-project-project-dir proj)
+                                (b4x-project-root-dir proj))
+                         (b4x-project-project-dir proj)
+                       (b4x-project-root-dir proj)))
+         (file (expand-file-name (concat name ".bas") target-dir)))
+    (cons file
+          (if (equal target-dir (b4x-project-project-dir proj))
+              name
+            (concat "|relative|"
+                    (string-replace "/" "\\"
+                                    (file-relative-name
+                                     (file-name-sans-extension file)
+                                     (b4x-project-project-dir proj))))))))
+
+(defun b4x--module-template (proj kind name newline)
+  "Return the source text for a new module of KIND/NAME in PROJ." 
+  (pcase-let* ((defaults (b4x--module-header-defaults proj))
+               (platform-key (plist-get defaults :platform-key))
+               (group (plist-get defaults :group))
+               (msv (plist-get defaults :modules-structure-version))
+               (version (plist-get defaults :version))
+               (type (pcase kind
+                       ('static "StaticCode")
+                       (_ "Class")))
+               (header (list (format "%s=true" platform-key)
+                             (format "Group=%s" group)
+                             (format "ModulesStructureVersion=%s" msv)
+                             (format "Type=%s" type)
+                             (format "Version=%s" version)
+                             b4x-project--design-marker)))
+    (concat
+     (mapconcat #'identity header newline)
+     newline
+     (pcase kind
+       ('static
+        (mapconcat #'identity
+                   '(""
+                     "Sub Process_Globals"
+                     "End Sub"
+                     ""
+                     "Public Sub Initialize"
+                     "End Sub")
+                   newline))
+       ('class
+        (mapconcat #'identity
+                   '(""
+                     "'Class module"
+                     "Sub Class_Globals"
+                     "End Sub"
+                     ""
+                     "Public Sub Initialize"
+                     "End Sub")
+                   newline))
+       ('b4xpage
+        (mapconcat #'identity
+                   (list ""
+                         "#Region  B4XPage Class"
+                         "Sub Class_Globals"
+                         "\tPrivate Root As B4XView"
+                         "\tPrivate xui As XUI"
+                         "End Sub"
+                         ""
+                         "Public Sub Initialize"
+                         "'\tB4XPages.GetManager.LogEvents = True"
+                         "End Sub"
+                         ""
+                         "Private Sub B4XPage_Created (Root1 As B4XView)"
+                         "\tRoot = Root1"
+                         (format "'\tRoot.LoadLayout(\"%s\")" name)
+                         "End Sub"
+                         "#End Region")
+                   newline))))))
+
+(defun b4x--create-module (proj kind name)
+  "Create a new B4X module of KIND and NAME inside PROJ.
+
+Returns the absolute path of the new `.bas' file.  KIND is one of
+`static', `class' or `b4xpage'."
+  (unless (eq (b4x-project-platform proj) 'b4j)
+    (user-error "`b4x-new-module' currently supports only B4J projects"))
+  (unless (b4x--module-name-p name)
+    (user-error "Invalid B4X module name: %s" name))
+  (when (and (eq kind 'b4xpage)
+             (not (string= (or (b4x-project-app-type proj) "") "JavaFX")))
+    (user-error "B4XPage modules require a B4J JavaFX project"))
+  (pcase-let* ((project-file (b4x-project-project-file proj))
+               (`(:bom ,bom :newline ,newline :header ,header :main ,main)
+                (b4x--project-file-components project-file))
+               (`(,target-file . ,module-spec) (b4x--module-target proj name)))
+    (b4x--ensure-clean-visiting-buffer project-file)
+    (when (file-exists-p target-file)
+      (user-error "Module already exists: %s" target-file))
+    (setq header (b4x--header-add-numbered "Module" module-spec header "NumberOfModules"))
+    (when (and (eq kind 'b4xpage)
+               (not (b4x--header-has-numbered-value "Library" "b4xpages" header)))
+      (setq header (b4x--header-add-numbered "Library" "b4xpages" header "NumberOfLibraries")))
+    (setq header (b4x--header-set "NumberOfModules"
+                                  (number-to-string
+                                   (length (b4x-project--collect-numbered "Module" header)))
+                                  header))
+    (setq header (b4x--header-set "NumberOfLibraries"
+                                  (number-to-string
+                                   (length (b4x-project--collect-numbered "Library" header)))
+                                  header))
+    (b4x--write-file-preserving-buffers
+     target-file (b4x--module-template proj kind name newline))
+    (b4x--write-project-header project-file header main newline bom)
+    (b4x-nav--clear-cache)
+    target-file))
+
+(defun b4x--read-module-kind ()
+  "Prompt for a new-module kind and return its symbol." 
+  (let* ((choices (mapcar (lambda (it) (cons (cdr it) (car it))) b4x--new-module-kinds))
+         (pick (completing-read "New module kind: " choices nil t)))
+    (cdr (assoc pick choices))))
+
+;;;###autoload
+(defun b4x-new-module (kind name)
+  "Create a new module NAME of KIND in the current B4J project." 
+  (interactive
+   (list (b4x--read-module-kind)
+         (read-string "New module name: ")))
+  (let* ((proj (b4x--current-project))
+         (path (b4x--create-module proj kind name)))
+    (find-file path)
+    (message "B4X: created %s (%s)%s"
+             (file-name-nondirectory path)
+             (cdr (assq kind b4x--new-module-kinds))
+             (if (eq kind 'b4xpage)
+                 " — uncomment/create the layout when ready"
+               ""))))
 
 
 ;;; Build / Run (delegated to the vendored scripts)
@@ -518,6 +773,7 @@ at point that matches a declared layout."
   [["Project"
     ("o" "Open project"       b4x-open-project)
     ("i" "Project info"        b4x-project-info)
+    ("n" "New module"          b4x-new-module)
     ("m" "Switch module"       b4x-switch-module)
     ("l" "Jump to layout"      b4x-goto-layout)]
    ["Build & Run"

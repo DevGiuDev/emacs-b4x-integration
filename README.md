@@ -171,6 +171,7 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | --- | --- | --- |
 | `C-c C-o` | `b4x-open-project` | Load a project (auto-detected or prompted). |
 | `C-c C-i` | `b4x-project-info` | Show modules, libraries, INI, root in a buffer. |
+| `C-c C-n` | `b4x-new-module` | Create a new B4J module (`Static Code`, `Class`, `B4XPage`) and register it in the `.b4j`. |
 | `C-c C-m` | `b4x-switch-module` | Jump to another module (completing-read). |
 
 ### Navigation & intelligence (native Emacs)

@@ -297,3 +297,88 @@
     (should (stringp (nth 1 entry)))
     (should (equal (nth 2 entry) 1))
     (should (equal (nth 3 entry) 2))))
+
+(defun b4x-test--write (file content)
+  (make-directory (file-name-directory file) t)
+  (with-temp-file file
+    (insert content)))
+
+(ert-deftest b4x-new-module/class-in-platform-project-root ()
+  (let* ((root (make-temp-file "b4x-newmod-root-" t))
+         (platform-dir (expand-file-name "B4J" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir))
+         (module-file (expand-file-name "Foo.bas" root)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Build1=Default,demo.app"
+                        "Group=Default Group"
+                        "Library1=jcore"
+                        "Library2=jfx"
+                        "NumberOfFiles=0"
+                        "NumberOfLibraries=2"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@"
+                        "Sub Process_Globals"
+                        "End Sub")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file))
+                 (created (b4x--create-module proj 'class "Foo"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string)))
+                 (module-text (with-temp-buffer
+                                (insert-file-contents module-file)
+                                (buffer-string))))
+            (should (equal created module-file))
+            (should (file-regular-p module-file))
+            (should (string-match-p (regexp-quote "Module1=|relative|..\\Foo")
+                                    project-text))
+            (should (string-match-p "NumberOfModules=1" project-text))
+            (should (string-match-p "Type=Class" module-text))
+            (should (string-match-p "Sub Class_Globals" module-text))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-new-module/b4xpage-adds-library-in-flat-project ()
+  (let* ((root (make-temp-file "b4x-newmod-flat-" t))
+         (project-file (expand-file-name "FlatDemo.b4j" root))
+         (module-file (expand-file-name "SettingsPage.bas" root)))
+    (unwind-protect
+        (progn
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("AppType=JavaFX"
+                        "Build1=Default,flat.demo"
+                        "Group=Default Group"
+                        "Library1=jcore"
+                        "Library2=jfx"
+                        "NumberOfFiles=0"
+                        "NumberOfLibraries=2"
+                        "NumberOfModules=0"
+                        "Version=10.5"
+                        "@EndOfDesignText@"
+                        "Sub Process_Globals"
+                        "End Sub")
+                      "\n"))
+          (let* ((proj (b4x-load-project project-file))
+                 (created (b4x--create-module proj 'b4xpage "SettingsPage"))
+                 (project-text (with-temp-buffer
+                                 (insert-file-contents project-file)
+                                 (buffer-string)))
+                 (module-text (with-temp-buffer
+                                (insert-file-contents module-file)
+                                (buffer-string))))
+            (should (equal created module-file))
+            (should (file-regular-p module-file))
+            (should (string-match-p "Module1=SettingsPage" project-text))
+            (should (string-match-p "Library3=b4xpages" project-text))
+            (should (string-match-p "NumberOfLibraries=3" project-text))
+            (should (string-match-p "B4XPage_Created" module-text))
+            (should (string-match-p "Root.LoadLayout(\\\"SettingsPage\\\")" module-text))))
+      (delete-directory root t))))
