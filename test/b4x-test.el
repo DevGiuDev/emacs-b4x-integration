@@ -63,6 +63,18 @@
     (should (equal (b4x-host-to-wine-path "/home/devgiu/dev/B4XAdditionalLibs")
                    "Z:\\home\\devgiu\\dev\\B4XAdditionalLibs"))))
 
+(ert-deftest b4x-wine/winepath-output-noise-is-ignored ()
+  "Ignore Wine noise and keep only the final Windows path from `winepath'."
+  (cl-letf (((symbol-function 'call-process)
+             (lambda (&rest _args)
+               (insert "002c:fixme:winediag:loader_init noise\n")
+               (insert "C:\\Program Files\\Anywhere Software\\B4J\\B4J.exe\n")
+               0)))
+    (should (equal (b4x-host-to-wine-path
+                    (expand-file-name
+                     "~/.wine_b4x/drive_c/Program Files/Anywhere Software/B4J/B4J.exe"))
+                   "C:\\Program Files\\Anywhere Software\\B4J\\B4J.exe"))))
+
 
 ;;; Header parsing unit tests
 

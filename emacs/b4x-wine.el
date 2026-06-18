@@ -156,12 +156,29 @@ Prefers `winepath -w' for correctness; falls back to a deterministic
         (b4x-wine--host-to-wine-fallback host prefix)))))
 
 (defun b4x-wine--winepath-windows (host prefix)
-  "Call `winepath -w' on HOST under PREFIX; return the trimmed result or nil."
+  "Call `winepath -w' on HOST under PREFIX; return a clean Windows path or nil.
+
+Some Wine setups print `fixme:'/loader noise around the real `winepath'
+output.  We therefore accept only the last line that looks like a proper
+Windows path and ignore everything else."
   (with-temp-buffer
     (let ((process-environment
-           (cons (format "WINEPREFIX=%s" prefix) process-environment)))
+           (append (list (format "WINEPREFIX=%s" prefix)
+                         "WINEDEBUG=-all")
+                   process-environment)))
       (when (eq 0 (call-process b4x-winepath-binary nil t nil "-w" host))
-        (string-trim (buffer-string))))))
+        (let* ((lines (split-string (buffer-string) "\r?\n" t "[ \\t]+"))
+               (candidate
+                (car (last (seq-filter
+                            (lambda (line)
+                              (string-match-p
+                               (rx bos alpha ":"
+                                   (or eos
+                                       (and (or "\\" "/") (* anything))))
+                               (string-trim line)))
+                            lines)))))
+          (when candidate
+            (string-trim candidate)))))))
 
 (defun b4x-wine--host-to-wine-fallback (host prefix)
   "Deterministic host -> Windows mapping when `winepath' is unavailable."
