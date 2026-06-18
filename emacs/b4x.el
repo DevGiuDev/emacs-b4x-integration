@@ -530,8 +530,9 @@ at point that matches a declared layout."
 
 (with-eval-after-load 'compile
   ;; B4JBuilder / javac error lines look like "file.bas:12: error: ..."
-  (add-to-list 'compilation-error-regexp-alist
-               (list 'b4x-line "\\(.+\\):\\([0-9]+\\):" 1 2)))
+  (add-to-list 'compilation-error-regexp-alist-alist
+               '(b4x-line "\\(.+\\):\\([0-9]+\\):" 1 2))
+  (add-to-list 'compilation-error-regexp-alist 'b4x-line))
 
 (provide 'b4x)
 ;;; b4x.el ends here

@@ -288,3 +288,12 @@
       (goto-char (point-min))
       (re-search-forward "LoadLayout")
       (should (equal (b4x--layout-name-at-point) "MainPage")))))
+
+(ert-deftest b4x-compile/regexp-registration-shape ()
+  (require 'compile)
+  (should (memq 'b4x-line compilation-error-regexp-alist))
+  (let ((entry (assoc 'b4x-line compilation-error-regexp-alist-alist)))
+    (should entry)
+    (should (stringp (nth 1 entry)))
+    (should (equal (nth 2 entry) 1))
+    (should (equal (nth 3 entry) 2))))
