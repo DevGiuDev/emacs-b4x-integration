@@ -25,6 +25,7 @@
 (require 'seq)
 (require 'imenu)
 (require 'xref)
+(require 'shr nil t)
 (require 'b4x-project)
 
 
@@ -413,15 +414,106 @@ Uses a per-project-file cache; pass NO-CACHE to force a rebuild."
 
 ;;; completion-at-point
 
-(defun b4x-nav--line-text-at (file line)
-  "Return the text at LINE in FILE, or nil."
-  (when (file-readable-p file)
+(defun b4x-nav--buffer-visits-file-p (buffer file)
+  "Non-nil when BUFFER is visiting FILE."
+  (and (buffer-live-p buffer)
+       file
+       (with-current-buffer buffer
+         (and buffer-file-name
+              (equal (expand-file-name buffer-file-name)
+                     (expand-file-name file))))))
+
+(defun b4x-nav--buffer-line-text-at (buffer line)
+  "Return the trimmed text at LINE in BUFFER, or nil."
+  (when (and (buffer-live-p buffer) (>= line 1))
+    (with-current-buffer buffer
+      (save-excursion
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (string-trim (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position)))))))
+
+(defun b4x-nav--line-text-at (file line &optional source-buffer)
+  "Return the text at LINE in FILE, or nil.
+When SOURCE-BUFFER is visiting FILE, prefer its live contents."
+  (cond
+   ((b4x-nav--buffer-visits-file-p source-buffer file)
+    (b4x-nav--buffer-line-text-at source-buffer line))
+   ((file-readable-p file)
     (with-temp-buffer
       (insert-file-contents file)
       (goto-char (point-min))
       (forward-line (1- line))
       (string-trim (buffer-substring-no-properties
-                    (line-beginning-position) (line-end-position))))))
+                    (line-beginning-position) (line-end-position)))))))
+
+(defun b4x-nav--sym-doc (sym &optional multiline source-buffer)
+  "Return documentation string for project symbol SYM, or nil."
+  (when-let ((sig (pcase (b4x-sym-kind sym)
+                    ('sub (b4x-nav--sub-signature sym source-buffer))
+                    (_ (b4x-nav--line-text-at
+                        (b4x-sym-file sym) (b4x-sym-line sym) source-buffer)))))
+    (string-join
+     (delq nil (list sig
+                     (and multiline
+                          (format "File: %s:%d"
+                                  (b4x-sym-file sym)
+                                  (b4x-sym-line sym)))))
+     "\n")))
+
+(defun b4x-nav--current-buffer-symbol-doc (name &optional multiline source-buffer)
+  "Return project documentation for NAME from SOURCE-BUFFER, or nil."
+  (when (buffer-live-p source-buffer)
+    (with-current-buffer source-buffer
+      (let* ((file (or buffer-file-name default-directory))
+             (syms (b4x-nav--parse-source (buffer-string) file))
+             (sym (seq-find (lambda (s)
+                              (string= (downcase (b4x-sym-name s))
+                                       (downcase name)))
+                            syms)))
+        (when sym
+          (b4x-nav--sym-doc sym multiline source-buffer))))))
+
+(defun b4x-nav--project-symbol-doc (tab name &optional multiline source-buffer)
+  "Return documentation string for project symbol NAME from TAB, or nil."
+  (or (b4x-nav--current-buffer-symbol-doc name multiline source-buffer)
+      (when-let ((sym (car (b4x-nav-lookup tab name))))
+        (b4x-nav--sym-doc sym multiline source-buffer))))
+
+(defun b4x-nav--htmlish-string-p (text)
+  "Return non-nil when TEXT appears to contain HTML markup or entities."
+  (and text
+       (or (string-match-p (rx "<" (or letter "!" "/") (*? anything) ">") text)
+           (string-match-p (rx "&" (+ (or alnum "#")) ";") text))))
+
+(defun b4x-nav--doc-to-html (doc)
+  "Wrap DOC in minimal HTML, preserving line breaks."
+  (concat "<html><body>"
+          (replace-regexp-in-string "\n" "<br/>\n" doc t t)
+          "</body></html>"))
+
+(defun b4x-nav--insert-doc-rendered (doc)
+  "Insert DOC into current buffer, rendering HTML when possible."
+  (if (and (featurep 'shr)
+           (fboundp 'libxml-parse-html-region)
+           (b4x-nav--htmlish-string-p doc))
+      (condition-case nil
+          (let ((dom (with-temp-buffer
+                       (insert (b4x-nav--doc-to-html doc))
+                       (libxml-parse-html-region (point-min) (point-max))))
+                (shr-use-fonts nil)
+                (shr-use-colors nil))
+            (shr-insert-document dom))
+        (error (insert doc)))
+    (insert doc)))
+
+(defun b4x-nav--make-doc-buffer (doc)
+  "Return the Company doc buffer for DOC, rendering HTML if needed."
+  (with-current-buffer (get-buffer-create " *b4x-capf-doc*")
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (b4x-nav--insert-doc-rendered doc)
+      (current-buffer))))
 
 (defun b4x-nav--b4xlib-index-stamp (index)
   "Return a cache stamp for b4xlib INDEX."
@@ -771,7 +863,8 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
             (end (plist-get ctx :end)))
         (when-let* ((tab (b4x-nav-table))
                     (project (b4x-symtab-project tab)))
-          (let* ((receiver (plist-get ctx :receiver))
+          (let* ((source-buffer (current-buffer))
+                 (receiver (plist-get ctx :receiver))
                  (candidates
                   (cond
                    (receiver
@@ -795,12 +888,11 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                           (b4x-nav--b4xlib-symbol-annotation project cand)))
                     :company-doc-buffer
                     (lambda (cand)
-                      (when-let ((doc (or (b4x-project-library-symbol-doc project cand t)
+                      (when-let ((doc (or (b4x-nav--project-symbol-doc
+                                           tab cand t source-buffer)
+                                          (b4x-project-library-symbol-doc project cand t)
                                           (b4x-nav--b4xlib-symbol-doc project cand t))))
-                        (with-current-buffer (get-buffer-create " *b4x-capf-doc*")
-                          (erase-buffer)
-                          (insert doc)
-                          (current-buffer))))
+                        (b4x-nav--make-doc-buffer doc)))
                     :company-kind (lambda (_c) 'function)))))))))
 
 (defconst b4x-nav--keywords
@@ -856,18 +948,15 @@ string (for older callers)."
 
 (defun b4x-eldoc--doc-string ()
   "Return the best eldoc string at point from project or library metadata."
-  (or (b4x-eldoc--sub-string)
+  (or (b4x-eldoc--project-string)
       (b4x-eldoc--library-string)
       (b4x-eldoc--b4xlib-string)))
 
-(defun b4x-eldoc--sub-string ()
-  "Return the signature string of the project Sub at point, or nil."
+(defun b4x-eldoc--project-string ()
+  "Return project documentation for the symbol at point, or nil."
   (when-let ((name (b4x-nav--symbol-at-point)))
     (when-let ((tab (b4x-nav-table)))
-      (when-let ((syms (b4x-nav-lookup tab name)))
-        (let ((s (car syms)))
-          (when (eq (b4x-sym-kind s) 'sub)
-            (b4x-nav--sub-signature s)))))))
+      (b4x-nav--project-symbol-doc tab name nil (current-buffer)))))
 
 (defun b4x-eldoc--library-string ()
   "Return one-line library XML documentation for the symbol at point, or nil."
@@ -883,15 +972,10 @@ string (for older callers)."
                 (project (b4x-symtab-project tab)))
       (b4x-nav--b4xlib-symbol-doc project name))))
 
-(defun b4x-nav--sub-signature (sym)
-  "Return a one-line signature for Sub SYM from its source file."
-  (when (file-readable-p (b4x-sym-file sym))
-    (with-temp-buffer
-      (insert-file-contents (b4x-sym-file sym))
-      (goto-char (point-min))
-      (forward-line (1- (b4x-sym-line sym)))
-      (string-trim (buffer-substring-no-properties
-                    (line-beginning-position) (line-end-position))))))
+(defun b4x-nav--sub-signature (sym &optional source-buffer)
+  "Return a one-line signature for Sub SYM from its source file.
+When SOURCE-BUFFER is visiting the same file, prefer its live contents."
+  (b4x-nav--line-text-at (b4x-sym-file sym) (b4x-sym-line sym) source-buffer))
 
 (provide 'b4x-nav)
 ;;; b4x-nav.el ends here

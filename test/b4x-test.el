@@ -502,6 +502,49 @@
                (cands (all-completions "Base64J" (nth 2 capf))))
           (should (member "Base64JO" cands)))))))
 
+(ert-deftest b4x-nav/company-doc-buffer-falls-back-to-project-symbol-doc ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj))
+         (file "/tmp/Demo.bas"))
+    (dolist (sym (list (make-b4x-sym :name "Foo" :kind 'sub :file file :line 1)
+                       (make-b4x-sym :name "GlobalCounter" :kind 'variable :file file :line 4)
+                       (make-b4x-sym :name "MyType" :kind 'type :file file :line 6)))
+      (b4x-nav--add-sym tab sym))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-candidates)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-symbol-doc)
+               (lambda (&rest _) nil))
+              ((symbol-function 'b4x-nav--b4xlib-symbol-doc)
+               (lambda (&rest _) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (setq-local buffer-file-name file)
+        (insert "Public Sub Foo(Name As String)\n"
+                "End Sub\n"
+                "Sub Process_Globals\n"
+                "  Dim GlobalCounter As Int\n"
+                "End Sub\n"
+                "Type MyType\n"
+                "End Type\n"
+                "Fo")
+        (let* ((capf (b4x-completion-at-point))
+               (doc-fn (plist-get (nthcdr 3 capf) :company-doc-buffer)))
+          (should (string-match-p
+                   "Public Sub Foo(Name As String)"
+                   (with-current-buffer (funcall doc-fn "Foo")
+                     (buffer-string))))
+          (should (string-match-p
+                   "Dim GlobalCounter As Int"
+                   (with-current-buffer (funcall doc-fn "GlobalCounter")
+                     (buffer-string))))
+          (should (string-match-p
+                   "Type MyType"
+                   (with-current-buffer (funcall doc-fn "MyType")
+                     (buffer-string)))))))))
+
 (ert-deftest b4x-nav/completion-after-as-only-offers-types ()
   (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
          (tab (make-b4x-symtab :project proj)))
@@ -649,6 +692,34 @@
         (b4x-mode)
         (insert "Bar")
         (should (equal (b4x-eldoc-function) "Bar() — library doc"))))))
+
+(ert-deftest b4x-nav/company-doc-buffer-renders-html-docs ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) '("Foo")))
+              ((symbol-function 'b4x-project-library-symbol-doc)
+               (lambda (_proj cand &optional multiline)
+                 (and (string= cand "Foo")
+                      (if multiline
+                          "Foo()\n<b>Bold</b> &amp; text"
+                        "Foo()"))))
+              ((symbol-function 'b4x-project-library-symbol-annotation)
+               (lambda (&rest _) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-candidates)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Fo")
+        (let* ((capf (b4x-completion-at-point))
+               (doc-fn (plist-get (nthcdr 3 capf) :company-doc-buffer))
+               (text (with-current-buffer (funcall doc-fn "Foo")
+                       (buffer-string))))
+          (should (string-match-p "Foo()" text))
+          (should (string-match-p "Bold & text" text))
+          (should-not (string-match-p "<b>" text))
+          (should-not (string-match-p "&amp;" text)))))))
 
 (ert-deftest b4x-project/b4xlib-indexing-and-docs ()
   (unless (executable-find "unzip")
