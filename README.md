@@ -115,6 +115,7 @@ b4x RET`). The ones you are most likely to touch:
 | `b4x-build-port` | `nil` | Port forwarded as `PORT`/`JVM_SERVER_PORT` when running jServer apps. |
 | `b4x-java-opts` | `nil` | Extra JVM options when running a B4J jar. |
 | `b4x-run-after-build` | `nil` | If `t`, run the jar after a successful build. |
+| `b4x-ide-log-file` | `nil` | Where `b4x-open-in-ide` appends Wine output. `nil` → `b4x-ide.log` in `temporary-file-directory`. |
 
 ### Per-project settings (`.dir-locals.el`)
 
@@ -195,7 +196,8 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | --- | --- | --- |
 | `C-c C-c` | `b4x-build` | Build with `wine B4JBuilder.exe`/`B4ABuilder.exe`. |
 | `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX). |
-| `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine. |
+| `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
+| `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |
 
 ### `project.el`
 

@@ -83,6 +83,14 @@ if you manage flymake yourself you can set this to nil."
   :group 'b4x
   :type 'boolean)
 
+(defcustom b4x-ide-log-file nil
+  "File where Wine output from `b4x-open-in-ide' is appended (fire-and-forget).
+
+Nil means a file named `b4x-ide.log' under `temporary-file-directory'.
+Inspect it with `b4x-ide-log' if the IDE ever fails to open."
+  :group 'b4x
+  :type '(choice (const :tag "Default temp file" nil) file))
+
 
 ;;; Faces
 
@@ -380,8 +388,9 @@ Only `b4j'/`b4a' are typically available under a Linux Wine prefix."
   "Open the current B4X project in the official B4X IDE under Wine.
 
 Launches `B4J.exe'/`B4A.exe' (from the Wine install dir) with the project
-file as a Windows path.  The process is detached so Emacs stays responsive
-while the IDE GUI runs."
+file as a Windows path.  The process is fully detached from Emacs
+(`nohup ... </dev/null >>log 2>&1 &') so the GUI runs independently even
+after Emacs is closed; Wine output is appended to `b4x-ide-log-file'."
   (interactive)
   (unless (b4x-wine-active-p)
     (user-error "Opening the IDE requires Wine (set `b4x-wine-enabled'/`b4x-wine-prefix')"))
@@ -391,13 +400,37 @@ while the IDE GUI runs."
          (pf-win (cdr spec))
          (exe-win (b4x-host-to-wine-path exe))
          (prefix (b4x-wine-resolve-prefix))
-         (buffer (get-buffer-create "*B4X IDE*"))
+         (logfile (b4x--ide-log-file))
+         ;; Run from a local directory so we never go through a Tramp handler.
+         (default-directory (b4x-project-project-dir proj))
          (process-environment
-          (cons (format "WINEPREFIX=%s" prefix) process-environment)))
-    (message "B4X: opening %s in the IDE (wine %s) ..."
+          (cons (format "WINEPREFIX=%s" prefix) process-environment))
+         (shell-cmd (format "setsid nohup %s %s %s </dev/null >>%s 2>&1 &"
+                            (shell-quote-argument b4x-wine-binary)
+                            (shell-quote-argument exe-win)
+                            (shell-quote-argument pf-win)
+                            (shell-quote-argument logfile))))
+    (message "B4X: opening %s in the IDE (wine %s) — log: %s"
              (file-name-nondirectory (b4x-project-project-file proj))
-             (file-name-nondirectory exe))
-    (start-file-process "b4x-ide" buffer b4x-wine-binary exe-win pf-win)))
+             (file-name-nondirectory exe)
+             logfile)
+    ;; `call-process-shell-command' returns once the shell backgrounds wine,
+    ;; and `nohup' keeps it alive after Emacs exits.
+    (call-process-shell-command shell-cmd)))
+
+(defun b4x--ide-log-file ()
+  "Return the Wine log path used by `b4x-open-in-ide'."
+  (or b4x-ide-log-file
+      (expand-file-name "b4x-ide.log" temporary-file-directory)))
+
+;;;###autoload
+(defun b4x-ide-log ()
+  "Display the Wine log produced by the last `b4x-open-in-ide'."
+  (interactive)
+  (let ((file (b4x--ide-log-file)))
+    (if (file-readable-p file)
+        (display-buffer (find-file-noselect file))
+      (message "B4X: no IDE log yet at %s" file))))
 
 ;;; Layout & module navigation
 
@@ -490,7 +523,8 @@ at point that matches a declared layout."
    ["Build & Run"
     ("c" "Build"               b4x-build)
     ("r" "Run"                 b4x-run-project)
-    ("e" "Open in B4X IDE"    b4x-open-in-ide)]])
+    ("e" "Open in B4X IDE"    b4x-open-in-ide)
+    ("L" "Show IDE log"        b4x-ide-log)]])
 
 ;;; Compilation mode tweaks
 
