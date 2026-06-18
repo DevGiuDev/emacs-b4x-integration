@@ -30,7 +30,8 @@ dispatch menu).
 
 MVP target achieved: open a B4J project, get navigation/completion/diagnostics,
 build, run, and hop into the official IDE — all from Emacs on a Linux box where
-B4X lives inside a Wine prefix. Remaining: deeper B4A/device workflow polish (Phase 7) and designer
+B4X lives inside a Wine prefix. Phase 7 now includes first Android deployment helpers (APK install, app
+launch, logcat). Remaining: deeper B4A/device workflow polish and designer
 (Phase 8).
 
 ---
@@ -116,6 +117,9 @@ b4x RET`). The ones you are most likely to touch:
 | `b4x-java-opts` | `nil` | Extra JVM options when running a B4J jar. |
 | `b4x-run-after-build` | `nil` | If `t`, run the jar after a successful build. |
 | `b4x-ide-log-file` | `nil` | Where `b4x-open-in-ide` appends Wine output. `nil` → `b4x-ide.log` in `temporary-file-directory`. |
+| `b4x-adb-binary` | `adb` | ADB executable used by the B4A Android helpers. |
+| `b4x-adb-serial` | `nil` | Optional `adb -s SERIAL` selector for a specific device/emulator. |
+| `b4x-b4a-logcat-buffer-name` | `*b4x-logcat*` | Buffer used by `b4x-b4a-logcat`. |
 
 ### Per-project settings (`.dir-locals.el`)
 
@@ -200,12 +204,25 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX) for B4J projects. |
 | `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
 | `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |
+| `C-c a i` | `b4x-b4a-install-apk` | Install the built B4A APK with `adb install -r`. |
+| `C-c a l` | `b4x-b4a-launch-app` | Launch the B4A app on device/emulator via `adb shell monkey`. |
+| `C-c a g` | `b4x-b4a-logcat` | Stream Android logcat into Emacs (`C-u` first clears it). |
+| `C-c a k` | `b4x-b4a-stop-logcat` | Stop the running logcat stream. |
 
 ### `project.el`
 
 Opening any file under a B4X project root registers it with `project.el`; use
 `C-x p p` (`project-switch-project`) or `C-x p f` (`project-find-file`) to move
 across modules.
+
+### B4A device flow
+
+Typical Android loop after opening a `.b4a` project:
+
+1. `C-c C-c` → build the APK under Wine.
+2. `C-c a i` → install/update it on the connected device (`adb install -r`).
+3. `C-c a l` → launch it.
+4. `C-c a g` → inspect runtime logs in Emacs.
 
 ## Notes & troubleshooting
 

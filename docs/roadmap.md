@@ -71,8 +71,10 @@ modules. ✅
 layouts. ✅
 
 ## Phase 7 — B4A
-- [ ] B4A config + build under Wine
-- [ ] (later) install/run on device
+- [x] B4A config + build under Wine
+- [x] module creation/registration for B4A (`Class`, `Static Code`, `B4XPage`, `Service`)
+- [x] first Android deployment helpers: install APK, launch app, logcat
+- [ ] deeper device workflow polish (adb uninstall/restart, better filtered logs, etc.)
 
 ## Phase 8 — Designer
 - Deferred. Open questions captured in WORKPLAN.md.

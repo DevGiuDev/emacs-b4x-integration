@@ -56,7 +56,7 @@
   :group 'languages
   :link '(url-link "https://github.com/emacs-b4x-integration"))
 
-(defconst b4x-package-version "0.2.0"
+(defconst b4x-package-version "0.3.0"
   "Version string of the loaded B4X Emacs package.")
 
 (defun b4x-version-string ()
@@ -110,6 +110,21 @@ Nil means a file named `b4x-ide.log' under `temporary-file-directory'.
 Inspect it with `b4x-ide-log' if the IDE ever fails to open."
   :group 'b4x
   :type '(choice (const :tag "Default temp file" nil) file))
+
+(defcustom b4x-adb-binary "adb"
+  "ADB executable used by the B4A deployment helpers."
+  :group 'b4x
+  :type 'string)
+
+(defcustom b4x-adb-serial nil
+  "Optional device serial passed to ADB as `-s SERIAL'."
+  :group 'b4x
+  :type '(choice (const :tag "Default device" nil) string))
+
+(defcustom b4x-b4a-logcat-buffer-name "*b4x-logcat*"
+  "Buffer name used by `b4x-b4a-logcat'."
+  :group 'b4x
+  :type 'string)
 
 
 ;;; Faces
@@ -181,6 +196,10 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
     (define-key map (kbd "C-c C-m") #'b4x-switch-module)
     (define-key map (kbd "C-c C-n") #'b4x-new-module)
     (define-key map (kbd "C-c C-d") #'b4x-dispatch)
+    (define-key map (kbd "C-c a i") #'b4x-b4a-install-apk)
+    (define-key map (kbd "C-c a l") #'b4x-b4a-launch-app)
+    (define-key map (kbd "C-c a g") #'b4x-b4a-logcat)
+    (define-key map (kbd "C-c a k") #'b4x-b4a-stop-logcat)
     map)
   "Keymap for `b4x-mode'.")
 
@@ -319,6 +338,9 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
         (insert (format "Root:       %s\n" (b4x-project-root-dir proj)))
         (insert (format "INI:        %s\n" (or (b4x-project-ini-path proj) "-")))
         (insert (format "Libraries:  %s\n" (b4x-project-libraries proj)))
+        (when (eq (b4x-project-platform proj) 'b4a)
+          (insert (format "AndroidPkg: %s\n" (or (b4x--b4a-build-package proj) "-")))
+          (insert (format "APK:        %s\n" (or (b4x--b4a-find-apk proj) "-"))))
         (insert "\nModules:\n")
         (dolist (m (b4x-project-modules proj))
           (insert (format "  - %s\n" m))))
@@ -714,6 +736,135 @@ The vendored script takes host paths (the platform folder holding the
       (user-error "`b4x-run-project' currently supports only B4J jars; use `b4x-build' / `b4x-open-in-ide' for B4A"))
     (b4x--run-script script (b4x--run-command-args proj))))
 
+(defun b4x--ensure-b4a-project (proj)
+  "Signal an error unless PROJ is a B4A project."
+  (unless (eq (b4x-project-platform proj) 'b4a)
+    (user-error "This command currently supports only B4A projects"))
+  proj)
+
+(defun b4x--adb-base-args ()
+  "Return the base ADB argv, including the optional `-s' serial selector."
+  (append (when b4x-adb-serial (list "-s" b4x-adb-serial))))
+
+(defun b4x--adb-command (&rest args)
+  "Return a shell-safe ADB command line from ARGS."
+  (mapconcat #'shell-quote-argument
+             (cons b4x-adb-binary (append (b4x--adb-base-args) args))
+             " "))
+
+(defun b4x--b4a-build-package (proj)
+  "Return the Android package id declared by PROJ, or nil."
+  (when-let ((build (car (b4x-project--collect-numbered "Build" (b4x-project-header proj)))))
+    (let ((parts (split-string build "," t "[[:space:]]+")))
+      (when (> (length parts) 1)
+        (nth 1 parts)))))
+
+(defun b4x--b4a-find-apk (proj)
+  "Return the best APK candidate generated for the B4A project PROJ.
+
+Prefers regular `.apk' files under `Objects/' and avoids common intermediate
+names such as `unaligned' or split package archives when possible."
+  (let* ((objects (expand-file-name "Objects" (b4x-project-project-dir proj)))
+         (files (and (file-directory-p objects)
+                     (directory-files-recursively objects "\\.apk\\'" t)))
+         (ranked
+          (sort (mapcar (lambda (f)
+                          (list f
+                                (if (string-match-p "unaligned\\|unsigned\\|split_" (downcase f)) 1 0)
+                                (float-time (file-attribute-modification-time
+                                             (file-attributes f)))))
+                        files)
+                (lambda (a b)
+                  (if (= (nth 1 a) (nth 1 b))
+                      (> (nth 2 a) (nth 2 b))
+                    (< (nth 1 a) (nth 1 b)))))))
+    (caar ranked)))
+
+(defun b4x--b4a-pidof (package)
+  "Return the device PID string for PACKAGE, or nil if unavailable."
+  (let* ((cmd (b4x--adb-command "shell" "pidof" "-s" package))
+         (out (shell-command-to-string cmd))
+         (pid (string-trim out)))
+    (when (string-match-p (rx bos (+ digit) eos) pid)
+      pid)))
+
+(defun b4x--b4a-logcat-buffer ()
+  "Return the dedicated B4A logcat buffer."
+  (get-buffer-create b4x-b4a-logcat-buffer-name))
+
+;;;###autoload
+(defun b4x-b4a-install-apk ()
+  "Install the current B4A project's APK on the connected Android device."
+  (interactive)
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (apk (or (b4x--b4a-find-apk proj)
+                  (user-error "No APK found under %s/Objects; build first"
+                              (b4x-project-project-dir proj)))))
+    (compile (b4x--adb-command "install" "-r" apk))))
+
+;;;###autoload
+(defun b4x-b4a-launch-app ()
+  "Launch the current B4A project on the connected device with `adb shell monkey'."
+  (interactive)
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (pkg (or (b4x--b4a-build-package proj)
+                  (user-error "Could not determine Android package id from BuildN="))))
+    (compile (b4x--adb-command "shell" "monkey" "-p" pkg
+                               "-c" "android.intent.category.LAUNCHER" "1"))))
+
+;;;###autoload
+(defun b4x-b4a-stop-logcat ()
+  "Stop the running `b4x-b4a-logcat' process, if any."
+  (interactive)
+  (when-let* ((buf (get-buffer b4x-b4a-logcat-buffer-name))
+              (proc (get-buffer-process buf)))
+    (delete-process proc)
+    (message "B4X: stopped logcat")))
+
+;;;###autoload
+(defun b4x-b4a-logcat (&optional clear)
+  "Stream Android logcat for the current B4A project into `b4x-b4a-logcat-buffer-name'.
+
+With prefix argument CLEAR, clear the device log first.  When the app is
+already running and its PID can be resolved, filter logcat to that process."
+  (interactive "P")
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (pkg (b4x--b4a-build-package proj))
+         (buf (b4x--b4a-logcat-buffer))
+         (pid (and pkg (b4x--b4a-pidof pkg))))
+    (when clear
+      (apply #'call-process b4x-adb-binary nil nil nil
+             (append (b4x--adb-base-args) (list "logcat" "-c"))))
+    (b4x-b4a-stop-logcat)
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (special-mode)
+        (setq-local default-directory (b4x-project-project-dir proj))))
+    (let* ((proc-args (append (b4x--adb-base-args)
+                              (if pid
+                                  (list "logcat" (format "--pid=%s" pid))
+                                (list "logcat"))))
+           (proc (make-process
+                  :name "b4x-logcat"
+                  :buffer buf
+                  :command (cons b4x-adb-binary proc-args)
+                  :noquery t
+                  :filter (lambda (_proc chunk)
+                            (when (buffer-live-p buf)
+                              (with-current-buffer buf
+                                (let ((inhibit-read-only t))
+                                  (goto-char (point-max))
+                                  (insert chunk))))))))
+      (set-process-query-on-exit-flag proc nil)
+      (display-buffer buf)
+      (message "B4X: logcat %s%s"
+               (if clear "(cleared) " "")
+               (cond
+                (pid (format "for %s (pid %s)" pkg pid))
+                (pkg (format "for %s (unfiltered)" pkg))
+                (t "(unfiltered)"))))))
+
 
 ;;; Open the B4X IDE under Wine
 
@@ -885,7 +1036,12 @@ at point that matches a declared layout."
     ("c" "Build"               b4x-build)
     ("r" "Run"                 b4x-run-project)
     ("e" "Open in B4X IDE"    b4x-open-in-ide)
-    ("L" "Show IDE log"        b4x-ide-log)]])
+    ("L" "Show IDE log"        b4x-ide-log)]
+   ["B4A / Android"
+    ("a i" "Install APK"       b4x-b4a-install-apk)
+    ("a l" "Launch app"        b4x-b4a-launch-app)
+    ("a g" "Logcat"            b4x-b4a-logcat)
+    ("a k" "Stop logcat"       b4x-b4a-stop-logcat)]])
 
 ;;; Compilation mode tweaks
 

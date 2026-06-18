@@ -512,3 +512,49 @@
             (should (string-match-p "Sub Service_Start (StartingIntent As Intent)"
                                     module-text))))
       (delete-directory root t))))
+
+(ert-deftest b4x-b4a/build-package-from-header ()
+  (let* ((root (make-temp-file "b4x-b4a-pkg-" t))
+         (platform-dir (expand-file-name "B4A" root))
+         (project-file (expand-file-name "Demo.b4a" platform-dir)))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (b4x-test--write
+           project-file
+           (mapconcat #'identity
+                      '("Build1=Default,com.example.demo"
+                        "Group=Default Group"
+                        "NumberOfLibraries=0"
+                        "NumberOfModules=0"
+                        "Version=9.9"
+                        "@EndOfDesignText@")
+                      "\n"))
+          (let ((proj (b4x-load-project project-file)))
+            (should (equal (b4x--b4a-build-package proj) "com.example.demo"))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-b4a/find-apk-prefers-final-apk ()
+  (let* ((root (make-temp-file "b4x-b4a-apk-" t))
+         (platform-dir (expand-file-name "B4A" root))
+         (objects-dir (expand-file-name "Objects" platform-dir))
+         (project-file (expand-file-name "Demo.b4a" platform-dir))
+         (final-apk (expand-file-name "bin/Demo.apk" objects-dir))
+         (bad-apk (expand-file-name "bin/Demo-unaligned.apk" objects-dir)))
+    (unwind-protect
+        (progn
+          (make-directory (file-name-directory final-apk) t)
+          (b4x-test--write project-file "Build1=Default,demo.app\n@EndOfDesignText@")
+          (b4x-test--write bad-apk "x")
+          (b4x-test--write final-apk "y")
+          (set-file-times bad-apk (time-subtract (current-time) (seconds-to-time 60)))
+          (set-file-times final-apk (current-time))
+          (let ((proj (b4x-load-project project-file)))
+            (should (equal (b4x--b4a-find-apk proj) final-apk))))
+      (delete-directory root t))))
+
+(ert-deftest b4x-b4a/adb-command-includes-serial-when-set ()
+  (let ((b4x-adb-binary "adb")
+        (b4x-adb-serial "emulator-5554"))
+    (should (equal (b4x--adb-command "install" "-r" "/tmp/app.apk")
+                   "adb -s emulator-5554 install -r /tmp/app.apk"))))
