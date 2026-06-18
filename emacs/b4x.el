@@ -33,6 +33,7 @@
 ;;   C-c C-l   jump to layout (from `LoadLayout("...")' or via completion)
 ;;   C-c C-c   build
 ;;   C-c C-r   run
+;;   C-c C-e   open in the official B4X IDE under Wine
 
 ;;; Code:
 
@@ -144,6 +145,7 @@ if you manage flymake yourself you can set this to nil."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c C-c") #'b4x-build)
     (define-key map (kbd "C-c C-r") #'b4x-run-project)
+    (define-key map (kbd "C-c C-e") #'b4x-open-in-ide)
     (define-key map (kbd "C-c C-o") #'b4x-open-project)
     (define-key map (kbd "C-c C-i") #'b4x-project-info)
     (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
@@ -345,6 +347,58 @@ and convert to Wine paths internally."
          (script (b4x--script-path "scripts/b4x-run.sh")))
     (b4x--run-script script (b4x--run-command-args proj))))
 
+
+;;; Open the B4X IDE under Wine
+
+(defconst b4x--ide-exe
+  '((b4j . "B4J.exe")
+    (b4a . "B4A.exe")
+    (b4i . "B4i.exe")
+    (b4r . "B4R.exe"))
+  "IDE executable name per B4X platform.")
+
+(defun b4x--ide-exe-path (platform)
+  "Return the host path of the IDE executable for PLATFORM, or nil.
+
+Only `b4j'/`b4a' are typically available under a Linux Wine prefix."
+  (when-let ((exe (cdr (assq platform b4x--ide-exe))))
+    (when-let ((dir (b4x-find-wine-install-dir platform)))
+      (let ((path (expand-file-name exe dir)))
+        (and (file-executable-p path) path)))))
+
+(defun b4x--open-in-ide-command-args (proj)
+  "Return (EXE . PROJECT-WIN-PATH) for launching the IDE of PROJ."
+  (let* ((platform (b4x-project-platform proj))
+         (exe (or (b4x--ide-exe-path platform)
+                  (user-error "No IDE executable found for %s under %s"
+                              platform (b4x-wine-resolve-prefix))))
+         (pf-win (b4x-host-to-wine-path (b4x-project-project-file proj))))
+    (cons exe pf-win)))
+
+;;;###autoload
+(defun b4x-open-in-ide ()
+  "Open the current B4X project in the official B4X IDE under Wine.
+
+Launches `B4J.exe'/`B4A.exe' (from the Wine install dir) with the project
+file as a Windows path.  The process is detached so Emacs stays responsive
+while the IDE GUI runs."
+  (interactive)
+  (unless (b4x-wine-active-p)
+    (user-error "Opening the IDE requires Wine (set `b4x-wine-enabled'/`b4x-wine-prefix')"))
+  (let* ((proj (b4x--current-project))
+         (spec (b4x--open-in-ide-command-args proj))
+         (exe (car spec))
+         (pf-win (cdr spec))
+         (exe-win (b4x-host-to-wine-path exe))
+         (prefix (b4x-wine-resolve-prefix))
+         (buffer (get-buffer-create "*B4X IDE*"))
+         (process-environment
+          (cons (format "WINEPREFIX=%s" prefix) process-environment)))
+    (message "B4X: opening %s in the IDE (wine %s) ..."
+             (file-name-nondirectory (b4x-project-project-file proj))
+             (file-name-nondirectory exe))
+    (start-file-process "b4x-ide" buffer b4x-wine-binary exe-win pf-win)))
+
 ;;; Layout & module navigation
 
 ;;;###autoload
@@ -435,7 +489,8 @@ at point that matches a declared layout."
     ("l" "Jump to layout"      b4x-goto-layout)]
    ["Build & Run"
     ("c" "Build"               b4x-build)
-    ("r" "Run"                 b4x-run-project)]])
+    ("r" "Run"                 b4x-run-project)
+    ("e" "Open in B4X IDE"    b4x-open-in-ide)]])
 
 ;;; Compilation mode tweaks
 
