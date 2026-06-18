@@ -298,6 +298,13 @@
     (should (equal (nth 2 entry) 1))
     (should (equal (nth 3 entry) 2))))
 
+(ert-deftest b4x-version/runtime-version-is-queryable ()
+  (should (stringp b4x-package-version))
+  (should (string-match-p "^B4X " (b4x-version-string)))
+  (should (string-match-p (regexp-quote b4x-package-version)
+                          (b4x-version-string)))
+  (should (equal (b4x-version) (b4x-version-string))))
+
 (defun b4x-test--write (file content)
   (make-directory (file-name-directory file) t)
   (with-temp-file file

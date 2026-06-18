@@ -4,7 +4,7 @@
 
 ;; Author: emacs-b4x-integration
 ;; Keywords: languages, tools
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; SPDX-License-Identifier: MIT
 
@@ -55,6 +55,25 @@
   "B4X (B4J/B4A) development for Emacs."
   :group 'languages
   :link '(url-link "https://github.com/emacs-b4x-integration"))
+
+(defconst b4x-package-version "0.2.0"
+  "Version string of the loaded B4X Emacs package.")
+
+(defun b4x-version-string ()
+  "Return a human-readable version string for the loaded B4X package."
+  (let ((file (or (symbol-file 'b4x-mode 'defun)
+                  (locate-library "b4x")
+                  "<unknown>")))
+    (format "B4X %s (%s)" b4x-package-version file)))
+
+;;;###autoload
+(defun b4x-version ()
+  "Display the loaded B4X package version and source path."
+  (interactive)
+  (let ((s (b4x-version-string)))
+    (when (called-interactively-p 'interactive)
+      (message "%s" s))
+    s))
 
 (defcustom b4x-build-on-save nil
   "If non-nil, rebuild the project after saving a source file."
@@ -157,6 +176,7 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
     (define-key map (kbd "C-c C-e") #'b4x-open-in-ide)
     (define-key map (kbd "C-c C-o") #'b4x-open-project)
     (define-key map (kbd "C-c C-i") #'b4x-project-info)
+    (define-key map (kbd "C-c C-v") #'b4x-version)
     (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
     (define-key map (kbd "C-c C-m") #'b4x-switch-module)
     (define-key map (kbd "C-c C-n") #'b4x-new-module)
@@ -278,6 +298,7 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
     (with-current-buffer (get-buffer-create "*B4X Project*")
       (let ((inhibit-read-only t))
         (erase-buffer)
+        (insert (format "Package:    %s\n" (b4x-version-string)))
         (insert (format "Project:    %s\n" (b4x-project-project-file proj)))
         (insert (format "Platform:   %s\n" (b4x-project-platform proj)))
         (insert (format "AppType:    %s\n" (or (b4x-project-app-type proj) "-")))
@@ -773,6 +794,7 @@ at point that matches a declared layout."
   [["Project"
     ("o" "Open project"       b4x-open-project)
     ("i" "Project info"        b4x-project-info)
+    ("v" "Version"             b4x-version)
     ("n" "New module"          b4x-new-module)
     ("m" "Switch module"       b4x-switch-module)
     ("l" "Jump to layout"      b4x-goto-layout)]
