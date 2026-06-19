@@ -50,9 +50,11 @@ MVP target achieved: open a B4J project, get navigation/completion/diagnostics,
 build, run, and hop into the official IDE — all from Emacs on a Linux box where
 B4X lives inside a Wine prefix. Phase 7 now includes practical **B4A** support:
 B4A project detection, module creation, build under Wine, APK install / launch,
-native Linux `adb` / emulator helpers, and a hybrid flow that opens `B4A.exe`
-for the official debugger. Remaining: deeper B4A/device workflow polish and
-designer (Phase 8).
+native Linux `adb` / emulator helpers, device selection, uninstall / restart,
+filtered logcat, and a hybrid flow that opens `B4A.exe` for the official
+debugger. Phase 8 now also includes native layout converter / sync support for
+`.bjl` / `.bal` / `.bil` ↔ `JsonLayouts/*.json`, with conflict-aware project
+sync and no SQLite dependency. Remaining: designer later (Phase 9).
 
 ---
 
@@ -145,6 +147,7 @@ b4x RET`). The ones you are most likely to touch:
 | `b4x-adb-binary` | `adb` | ADB executable used by the B4A Android helpers. |
 | `b4x-adb-serial` | `nil` | Optional `adb -s SERIAL` selector for a specific device/emulator. |
 | `b4x-b4a-logcat-buffer-name` | `*b4x-logcat*` | Buffer used by `b4x-b4a-logcat`. |
+| `b4x-b4a-logcat-fallback-specs` | `("B4A:V" "B4X:V" "AndroidRuntime:E" "System.err:W" "*:S")` | Quieter tag-based logcat filter used before the app PID is available. |
 | `b4x-emulator-binary` | `emulator` | Native Linux Android emulator executable. |
 | `b4x-b4a-default-avd` | `nil` | Preferred AVD name for emulator/hybrid-debug commands. |
 | `b4x-b4a-emulator-args` | `nil` | Extra args passed to `emulator -avd ...`. |
@@ -237,6 +240,11 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | Key | Command | Description |
 | --- | --- | --- |
 | `C-c C-l` | `b4x-goto-layout` | Jump to the layout at point (`LoadLayout("X")`) or pick one. |
+| `C-c C-y` | `b4x-layout-sync-project` | Sync all project layouts between `Files/` and `JsonLayouts/`, with conflict detection. |
+| `M-x b4x-layout-open-json` | `b4x-layout-open-json` | Open the `JsonLayouts/<name>.json` sidecar for a layout, exporting it first if needed. |
+| `M-x b4x-layout-export` | `b4x-layout-export` | Export a binary layout to pretty JSON. |
+| `M-x b4x-layout-import` | `b4x-layout-import` | Import a JSON sidecar back to `.bjl` / `.bal` / `.bil`. |
+| `M-x b4x-layout-sync-project` | `b4x-layout-sync-project` | Sync all project layouts between `Files/` and `JsonLayouts/`, with conflict detection. |
 
 ### Build, run & IDE
 
@@ -246,13 +254,16 @@ All bindings are in `b4x-mode` (active for `.bas`/`.b4j`/`.b4a`/`.b4i`/`.b4r`).
 | `C-c C-r` | `b4x-run-project` | Run the jar (`java -jar`, or `wine java` for JavaFX) for B4J projects. |
 | `C-c C-e` | `b4x-open-in-ide` | Open the project in the official B4X IDE under Wine (fully detached via `setsid`/`nohup`; Wine output → `b4x-ide-log-file`). |
 | `C-c C-d L` | `b4x-ide-log` | Show the Wine log if the IDE ever fails to open. |
+| `C-c a s` | `b4x-b4a-select-device` | Select the Android device used by later B4A helper commands in this Emacs session. |
 | `C-c a v` | `b4x-b4a-list-avds` | List available Android virtual devices (AVDs). |
 | `C-c a e` | `b4x-b4a-start-emulator` | Start a native Linux Android emulator (`emulator -avd ...`). |
-| `C-c a w` | `b4x-b4a-wait-for-device` | Wait until ADB sees a fully booted device/emulator. |
+| `C-c a w` | `b4x-b4a-wait-for-device` | Wait until ADB sees a fully booted device/emulator. Auto-selects a target when several devices are visible. |
 | `C-c a d` | `b4x-b4a-debug-in-ide` | Hybrid flow: optional emulator start, wait for device, then open B4A IDE for official debugging. |
-| `C-c a i` | `b4x-b4a-install-apk` | Install the built B4A APK with `adb install -r`. |
+| `C-c a i` | `b4x-b4a-install-apk` | Install the built B4A APK with `adb install -r`. Auto-selects / prompts for the target device when needed. |
+| `C-c a u` | `b4x-b4a-uninstall-app` | Uninstall the current B4A app from the selected device. |
 | `C-c a l` | `b4x-b4a-launch-app` | Launch the B4A app on device/emulator via `adb shell monkey`. |
-| `C-c a g` | `b4x-b4a-logcat` | Stream Android logcat into Emacs (`C-u` first clears it). |
+| `C-c a r` | `b4x-b4a-restart-app` | Force-stop and relaunch the B4A app on the selected device. |
+| `C-c a g` | `b4x-b4a-logcat` | Stream Android logcat into Emacs (`C-u` first clears it). Uses PID filtering when possible, otherwise a quieter tag filter. |
 | `C-c a k` | `b4x-b4a-stop-logcat` | Stop the running logcat stream. |
 
 ### `project.el`
@@ -270,9 +281,15 @@ that, the saved B4A config is reused by `B4ABuilder.exe`.
 Typical Android loop after opening a `.b4a` project:
 
 1. `C-c C-c` → build the APK under Wine.
-2. `C-c a i` → install/update it on the connected device (`adb install -r`).
-3. `C-c a l` → launch it.
-4. `C-c a g` → inspect runtime logs in Emacs.
+2. Optional: `C-c a s` → pin the current Android device for this Emacs session.
+3. `C-c a i` → install/update it on the selected device (`adb install -r`).
+4. `C-c a r` → restart it quickly (`am force-stop` + launch), or `C-c a l` to launch only.
+5. `C-c a g` → inspect runtime logs in Emacs.
+6. `C-c a u` → uninstall it when needed.
+
+If `b4x-adb-serial` is nil, the helper commands automatically reuse the last
+selected device, auto-pick the sole connected device, or prompt when several
+ready devices are connected.
 
 ### Hybrid B4A debugging flow
 
@@ -285,6 +302,32 @@ If you want the **official B4A debugger** instead of a pure adb loop:
 
 This keeps emulator / adb native on Linux while leaving the real B4A debugger
 under control of the official IDE.
+
+> **How the bridge works.** B4A never manages emulators; it talks to Android
+> over ADB. The Windows `adb.exe` used by B4A under Wine and the native Linux
+> `adb` **share the same ADB server** (port 5037), so any device the native
+> adb sees is visible to B4A's `adb.exe` too. No AVD registration inside Wine
+> is needed.
+
+### B4A on the official IDE: the `robocopy` stub
+
+Compiling from the **B4A IDE** under Wine can fail with
+`No se puede encontrar: C:\windows\System32\Robocopy.exe` or silently copy
+0 asset/layout files. Cause: Wine ships `robocopy.exe` as a **builtin stub**
+that copies nothing (exit code 16); B4A invokes it by a fixed path. Fixes:
+
+- install a real `robocopy.exe` into the prefix's `system32` (B4A.exe is
+  64-bit), **and**
+- set the Wine override `robocopy.exe = native` (the `.exe` suffix is
+  mandatory; a bare `robocopy` override is ignored).
+
+The `b4x-android-emulator` skill ships both a prebuilt native `robocopy.exe`
+and an installer script. Details and the full emulator recipe are in
+[docs/wine.md](docs/wine.md) ("B4A on Android emulator") and in the skill.
+
+> Headless `B4ABuilder.exe` builds (`C-c C-c`) do **not** hit this — they
+> package `Files/` via `aapt -A ..\Files` directly. The fix is only needed
+> for IDE builds.
 
 ## Notes & troubleshooting
 
@@ -338,6 +381,7 @@ emacs-b4x-integration/
 - [Architecture](docs/architecture.md)
 - [Roadmap](docs/roadmap.md)
 - [Wine notes](docs/wine.md)
+- [Layout converter notes](docs/layout-converter.md)
 - [Work plan](WORKPLAN.md)
 
 ## License

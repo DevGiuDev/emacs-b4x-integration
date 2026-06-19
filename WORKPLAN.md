@@ -1,5 +1,12 @@
 # emacs-b4x-integration — Plan de trabajo
 
+> **Nota histórica**
+>
+> Este documento conserva el plan inicial del proyecto. La arquitectura y el
+> estado vigentes están en [`docs/architecture.md`](docs/architecture.md) y
+> [`docs/roadmap.md`](docs/roadmap.md). Las referencias a Node/LSP más abajo
+> describen ideas tempranas ya descartadas.
+
 ## Objetivo
 Crear una integración para Emacs orientada al desarrollo con B4X en Linux, con especial foco en instalaciones bajo Wine.
 
@@ -282,14 +289,27 @@ emacs-b4x-integration/
 
 ## Decisiones técnicas pendientes
 
-1. **¿Reutilizar el LSP actual tal cual o bifurcarlo?**
-2. **¿Extraer lógica desde el repo VSCode o reimplementar limpio?**
-3. **¿CLI primero o librería Node primero?**
-4. **¿eglot solo, o compatibilidad opcional con lsp-mode?**
-5. **¿Qué formato de configuración usar en Emacs?**
-   - `defcustom`
-   - `.dir-locals.el`
-   - archivo propio opcional
+Resueltas en la implementación actual. Ver el detalle vigente en
+[`docs/architecture.md`](docs/architecture.md):
+
+- implementación **pure Emacs Lisp**
+- sin servidor LSP externo
+- integración nativa con `xref`, `capf`, `flymake`, `imenu`, `eldoc`
+- configuración con `defcustom` y `.dir-locals.el`
+
+---
+
+## TODO inmediato
+- [x] Smoke test del flujo B4A/dispositivo con emulador real sobre `~/dev/B4XProj/B4X-Birthday-Reminder/`:
+  - build + install del APK
+  - `restart` / `uninstall`
+  - `logcat` filtrado
+  - proyecto cargado y ejecutado correctamente en AVD Android 34
+- [x] Validación end-to-end del debug híbrido en IDE:
+  - emulador nativo + servidor ADB compartido con B4A.exe bajo Wine
+  - fix del stub `robocopy` de Wine (override `robocopy.exe = native` + exe real 64-bit)
+  - compilación IDE + logs en vivo del emulador
+  - conocimiento persistido en la skill `b4x-android-emulator`
 
 ---
 

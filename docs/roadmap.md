@@ -75,7 +75,19 @@ layouts. ✅
 - [x] module creation/registration for B4A (`Class`, `Static Code`, `B4XPage`, `Service`)
 - [x] first Android deployment helpers: install APK, launch app, logcat
 - [x] hybrid debug preparation: native Linux emulator/ADB + open B4A IDE for official debugging
-- [ ] deeper device workflow polish (adb uninstall/restart, better filtered logs, auto-select devices, etc.)
+- [x] deeper device workflow polish (adb uninstall/restart, better filtered logs, auto-select devices, etc.); validated against the real `~/dev/B4XProj/B4X-Birthday-Reminder/` B4A project model and covered with targeted ERT tests
+- [x] hybrid debug-in-IDE validated end-to-end: native Linux emulator + shared ADB server, B4A.exe under Wine compiles (after the Wine `robocopy` stub fix), installs, and streams live logs from the IDE
 
-## Phase 8 — Designer
+## Phase 8 — Layout converter / sync
+- [x] add `b4x-layout.el` binary reader/writer for `.bjl` / `.bal` / `.bil`
+- [x] JSON import/export helpers matching the `JsonLayouts` object shape
+- [x] project-level sync command for `Files/` ↔ `JsonLayouts/`
+- [x] conflict detection for "both sides changed" cases
+- [x] optional JSON sidecar state file (no SQLite)
+- [x] optional jump from `LoadLayout("...")` to the JSON sidecar
+- [x] tests using real local layout fixtures
+
+See `docs/layout-converter.md` for the reverse-engineered format and sync notes.
+
+## Phase 9 — Designer
 - Deferred. Open questions captured in WORKPLAN.md.

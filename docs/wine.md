@@ -112,3 +112,49 @@ WINEPREFIX=<prefix> wine "<install>/B4J/B4JBuilder.exe" \
 
 See the vendored `core/scripts/b4x-build.sh` and `core/scripts/b4x-run.sh` for
 the full, battle-tested logic.
+
+## B4A on Android emulator (native Linux + Wine hybrid)
+
+B4A never manages emulators: it talks to Android over **ADB**. The Windows
+`adb.exe` used by B4A under Wine and the native Linux `adb` **share the same
+ADB server** (TCP port 5037), so any device the native adb sees is visible to
+B4A's `adb.exe` too. No AVD registration inside Wine is needed. Verified:
+`emulator-5554` started with the native emulator binary shows up in
+`adb.exe devices -l` with the same `transport_id`.
+
+Canonical flow:
+
+1. Start a **native** Linux emulator (e.g. `-avd B4A_API34 -no-window -gpu
+   swiftshader_indirect`) and wait for `sys.boot_completed=1`.
+2. Verify the bridge:
+   `adb devices -l` (native) and `wine C:\Android\platform-tools\adb.exe
+   devices -l` must list the same emulator.
+3. Open the project in `B4A.exe` (the Emacs command `b4x-b4a-debug-in-ide`,
+   `C-c a d`, does the wait + IDE launch) and press F5 / F11 there.
+
+See the `b4x-android-emulator` skill for the full recipe.
+
+### The Wine robocopy stub (B4A asset builds)
+
+Wine ships `robocopy.exe` as a **builtin stub** that copies nothing and
+returns exit code 16. B4A/B4J invoke it by a **fixed path**
+`C:\windows\System32\Robocopy.exe` when copying project `Files/` (layouts,
+assets). Symptoms: IDE build fails with "No se puede encontrar:
+C:\windows\System32\Robocopy.exe" or copies 0 assets; the log shows
+`fixme:robocopy:wmain robocopy stub`.
+
+Two subtleties (both required):
+
+1. A `.bat` shim does **not** work — B4A requires the literal `.exe`.
+2. Placing a native `.exe` in `system32` is shadowed by the builtin unless a
+   Wine `DllOverride` forces it. The override name **must include the `.exe`
+   suffix**: `robocopy.exe = native`. A bare `robocopy` override is ignored.
+
+The `b4x-android-emulator` skill ships a real `robocopy.exe` (PE32+ x86-64,
+built with .NET) and a `scripts/install-robocopy-fix.sh` that backs up the
+stub, installs the native exe into the prefix's `system32` (B4A.exe is
+64-bit), and sets the override. Restart the wineserver after applying.
+
+Note: headless `B4ABuilder.exe` builds can succeed **without** the fix
+because the builder packages `Files/` via `aapt -A ..\Files` directly; only
+the IDE build (and some asset-refresh paths) go through robocopy.

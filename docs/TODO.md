@@ -1,0 +1,1 @@
+- [x] Smoke test del flujo B4A/dispositivo con emulador sobre `~/dev/B4XProj/B4X-Birthday-Reminder/`
