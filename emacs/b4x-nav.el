@@ -163,8 +163,19 @@ never mistreating `As' as a name."
 
 (defconst b4x-nav--builtin-type-names
   '("String" "Int" "Long" "Double" "Float" "Boolean" "Byte" "Short"
-    "Char" "Object" "Map" "List" "Array" "Byte()" "String()" "Object()")
+    "Char" "Object" "Map" "List" "Array" "Byte()" "String()"
+    "Object()" "Boolean()" "Int()" "Long()" "Double()" "Float()")
   "Builtin B4X type names offered after `As'.")
+
+(defconst b4x-nav--builtin-global-candidates
+  '("Array" "CreateMap" "CreateList")
+  "Builtin global constructors offered alongside project/library symbols.")
+
+(defconst b4x-nav--builtin-global-docs
+  '(("array" . "Array(...)\nCreate an array literal.")
+    ("createmap" . "CreateMap(...) As Map\nCreate and initialize a Map.")
+    ("createlist" . "CreateList(...) As List\nCreate and initialize a List."))
+  "Builtin global documentation keyed by downcased symbol name.")
 
 (defconst b4x-nav--builtin-type-members
   '(("string" . ("CharAt" "CompareTo" "Contains" "EndsWith" "IndexOf"
@@ -174,6 +185,11 @@ never mistreating `As' as a name."
     ("string()" . ("Length"))
     ("byte()" . ("Length"))
     ("object()" . ("Length"))
+    ("boolean()" . ("Length"))
+    ("int()" . ("Length"))
+    ("long()" . ("Length"))
+    ("double()" . ("Length"))
+    ("float()" . ("Length"))
     ("array" . ("Length"))
     ("list" . ("Add" "AddAll" "Clear" "Get" "IndexOf" "Initialize"
                 "InsertAt" "IsInitialized" "RemoveAt" "Set" "Size"
@@ -183,6 +199,57 @@ never mistreating `As' as a name."
                "Values")))
   "Builtin member candidates for core B4X types not covered by XML libs.")
 
+(defconst b4x-nav--builtin-member-returntypes
+  '(("string" . (("charat" . "String")
+                  ("compareto" . "Int")
+                  ("contains" . "Boolean")
+                  ("endswith" . "Boolean")
+                  ("indexof" . "Int")
+                  ("lastindexof" . "Int")
+                  ("length" . "Int")
+                  ("replace" . "String")
+                  ("replaceall" . "String")
+                  ("split" . "String()")
+                  ("startswith" . "Boolean")
+                  ("substring" . "String")
+                  ("substring2" . "String")
+                  ("tolowercase" . "String")
+                  ("touppercase" . "String")
+                  ("trim" . "String")))
+    ("string()" . (("length" . "Int")))
+    ("byte()" . (("length" . "Int")))
+    ("object()" . (("length" . "Int")))
+    ("boolean()" . (("length" . "Int")))
+    ("int()" . (("length" . "Int")))
+    ("long()" . (("length" . "Int")))
+    ("double()" . (("length" . "Int")))
+    ("float()" . (("length" . "Int")))
+    ("array" . (("length" . "Int")))
+    ("list" . (("add" . "Void")
+                ("addall" . "Void")
+                ("clear" . "Void")
+                ("get" . "Object")
+                ("indexof" . "Int")
+                ("initialize" . "Void")
+                ("insertat" . "Void")
+                ("isinitialized" . "Boolean")
+                ("removeat" . "Object")
+                ("set" . "Void")
+                ("size" . "Int")))
+    ("map" . (("clear" . "Void")
+               ("containskey" . "Boolean")
+               ("get" . "Object")
+               ("getdefault" . "Object")
+               ("initialize" . "Void")
+               ("isinitialized" . "Boolean")
+               ("keys" . "List")
+               ("put" . "Void")
+               ("putall" . "Void")
+               ("remove" . "Object")
+               ("size" . "Int")
+               ("values" . "List"))))
+  "Builtin return types keyed by type name then member name.")
+
 (defun b4x-nav--b4xlib-cache-key (library)
   "Return the cache key for b4xlib LIBRARY." 
   (let* ((path (b4x-library-path library))
@@ -191,8 +258,8 @@ never mistreating `As' as a name."
     (format "%s::%s" path mtime)))
 
 (defun b4x-nav--b4xlib-root-dir ()
-  "Return the temp root used to extract `.b4xlib' archives."
-  (expand-file-name "b4x-b4xlib" temporary-file-directory))
+  "Return the persistent root used to extract `.b4xlib' archives."
+  (expand-file-name "b4xlib-extract/" b4x-cache-directory))
 
 (defun b4x-nav--b4xlib-extract-dir (library)
   "Return the extraction directory for b4xlib LIBRARY."
@@ -216,28 +283,83 @@ never mistreating `As' as a name."
                  (string-trim (buffer-string))))))
     dir))
 
+(defun b4x-nav--serialize-sym (sym)
+  "Return a readable representation of SYM."
+  (list :name (b4x-sym-name sym)
+        :kind (b4x-sym-kind sym)
+        :file (b4x-sym-file sym)
+        :line (b4x-sym-line sym)
+        :visibility (b4x-sym-visibility sym)))
+
+(defun b4x-nav--deserialize-sym (payload)
+  "Return a `b4x-sym' reconstructed from PAYLOAD."
+  (make-b4x-sym :name (plist-get payload :name)
+                :kind (plist-get payload :kind)
+                :file (plist-get payload :file)
+                :line (plist-get payload :line)
+                :visibility (plist-get payload :visibility)))
+
+(defun b4x-nav--serialize-symtab (tab)
+  "Return a readable representation of symtab TAB."
+  (let (syms)
+    (maphash (lambda (_ entries)
+               (dolist (sym entries)
+                 (push (b4x-nav--serialize-sym sym) syms)))
+             (b4x-symtab-by-name tab))
+    (list :files (b4x-symtab-files tab)
+          :symbols (nreverse syms))))
+
+(defun b4x-nav--deserialize-symtab (payload)
+  "Return a symtab reconstructed from PAYLOAD."
+  (let ((tab (make-b4x-symtab)))
+    (dolist (sym-payload (plist-get payload :symbols))
+      (b4x-nav--add-sym tab (b4x-nav--deserialize-sym sym-payload)))
+    (setf (b4x-symtab-files tab) (plist-get payload :files))
+    tab))
+
+(defun b4x-nav--serialize-b4xlib-index (index)
+  "Return a readable representation of b4xlib INDEX."
+  (list :extract-dir (b4x-nav-b4xlib-index-extract-dir index)
+        :module-files (b4x-nav-b4xlib-index-module-files index)
+        :symtab (b4x-nav--serialize-symtab (b4x-nav-b4xlib-index-symtab index))))
+
+(defun b4x-nav--deserialize-b4xlib-index (library payload)
+  "Return a b4xlib index for LIBRARY reconstructed from PAYLOAD."
+  (make-b4x-nav-b4xlib-index
+   :library library
+   :extract-dir (plist-get payload :extract-dir)
+   :module-files (plist-get payload :module-files)
+   :symtab (b4x-nav--deserialize-symtab (plist-get payload :symtab))))
+
 (defun b4x-nav--index-b4xlib (library)
   "Return a cached index for b4xlib LIBRARY, or nil."
   (when (and (eq (b4x-library-kind library) 'b4xlib)
              (file-readable-p (b4x-library-path library)))
     (let ((key (b4x-nav--b4xlib-cache-key library)))
       (or (gethash key b4x-nav--b4xlib-cache)
-          (let* ((dir (b4x-nav--ensure-b4xlib-extracted library))
-                 (files (directory-files-recursively dir "\\.bas\\'" t))
-                 (tab (make-b4x-symtab))
-                 (module-files nil))
-            (dolist (file files)
-              (when (b4x-nav--index-file tab file)
-                (push file (b4x-symtab-files tab))
-                (push (cons (file-name-base file) file) module-files)))
-            (setf (b4x-symtab-files tab) (nreverse (b4x-symtab-files tab)))
-            (let ((index (make-b4x-nav-b4xlib-index
-                          :library library
-                          :extract-dir dir
-                          :module-files (nreverse module-files)
-                          :symtab tab)))
-              (puthash key index b4x-nav--b4xlib-cache)
-              index))))))
+          (let ((disk (b4x-project--disk-cache-read 'b4xlib-index key)))
+            (if disk
+                (let ((index (b4x-nav--deserialize-b4xlib-index library disk)))
+                  (puthash key index b4x-nav--b4xlib-cache)
+                  index)
+              (let* ((dir (b4x-nav--ensure-b4xlib-extracted library))
+                     (files (directory-files-recursively dir "\\.bas\\'" t))
+                     (tab (make-b4x-symtab))
+                     (module-files nil))
+                (dolist (file files)
+                  (when (b4x-nav--index-file tab file)
+                    (push file (b4x-symtab-files tab))
+                    (push (cons (file-name-base file) file) module-files)))
+                (setf (b4x-symtab-files tab) (nreverse (b4x-symtab-files tab)))
+                (let* ((index (make-b4x-nav-b4xlib-index
+                               :library library
+                               :extract-dir dir
+                               :module-files (nreverse module-files)
+                               :symtab tab))
+                       (payload (b4x-nav--serialize-b4xlib-index index)))
+                  (b4x-project--disk-cache-write 'b4xlib-index key payload)
+                  (puthash key index b4x-nav--b4xlib-cache)
+                  index))))))))
 
 (defun b4x-nav--project-b4xlib-indices (project)
   "Return indexed `.b4xlib' archives referenced by PROJECT." 
@@ -530,42 +652,48 @@ When SOURCE-BUFFER is visiting FILE, prefer its live contents."
                     (b4x-project-libraries project)
                     (mapcar #'b4x-nav--b4xlib-index-stamp indices))))
     (or (gethash key b4x-nav--b4xlib-symbol-index-cache)
-        (let ((infos (make-hash-table :test 'equal))
-              candidates)
-          (dolist (index indices)
-            (dolist (module (b4x-nav-b4xlib-index-module-files index))
-              (let ((name (car module)))
-                (push name candidates)
-                (push (list :kind 'module
-                            :name name
-                            :file (cdr module)
-                            :library (b4x-nav-b4xlib-index-library index)
-                            :signature (format "%s (b4xlib module)" name))
-                      (gethash (downcase name) infos))))
-            (maphash
-             (lambda (_key syms)
-               (dolist (sym syms)
-                 (let ((name (b4x-sym-name sym)))
-                   (push name candidates)
-                   (push (list :kind (b4x-sym-kind sym)
-                               :name name
-                               :file (b4x-sym-file sym)
-                               :line (b4x-sym-line sym)
-                               :library (b4x-nav-b4xlib-index-library index)
-                               :signature (pcase (b4x-sym-kind sym)
-                                            ('sub (b4x-nav--sub-signature sym))
-                                            (_ (b4x-nav--line-text-at
-                                                (b4x-sym-file sym)
-                                                (b4x-sym-line sym)))))
-                         (gethash (downcase name) infos)))))
-             (b4x-symtab-by-name (b4x-nav-b4xlib-index-symtab index))))
-          (maphash (lambda (name entries)
-                     (puthash name (nreverse entries) infos))
-                   infos)
-          (let ((index (list :candidates (delete-dups (delq nil candidates))
-                             :infos infos)))
-            (puthash key index b4x-nav--b4xlib-symbol-index-cache)
-            index)))))
+        (let ((disk (b4x-project--disk-cache-read 'b4xlib-symbol-index key)))
+          (if disk
+              (progn
+                (puthash key disk b4x-nav--b4xlib-symbol-index-cache)
+                disk)
+            (let ((infos (make-hash-table :test 'equal))
+                  candidates)
+              (dolist (index indices)
+                (dolist (module (b4x-nav-b4xlib-index-module-files index))
+                  (let ((name (car module)))
+                    (push name candidates)
+                    (push (list :kind 'module
+                                :name name
+                                :file (cdr module)
+                                :library (b4x-nav-b4xlib-index-library index)
+                                :signature (format "%s (b4xlib module)" name))
+                          (gethash (downcase name) infos))))
+                (maphash
+                 (lambda (_key syms)
+                   (dolist (sym syms)
+                     (let ((name (b4x-sym-name sym)))
+                       (push name candidates)
+                       (push (list :kind (b4x-sym-kind sym)
+                                   :name name
+                                   :file (b4x-sym-file sym)
+                                   :line (b4x-sym-line sym)
+                                   :library (b4x-nav-b4xlib-index-library index)
+                                   :signature (pcase (b4x-sym-kind sym)
+                                                ('sub (b4x-nav--sub-signature sym))
+                                                (_ (b4x-nav--line-text-at
+                                                    (b4x-sym-file sym)
+                                                    (b4x-sym-line sym)))))
+                             (gethash (downcase name) infos)))))
+                 (b4x-symtab-by-name (b4x-nav-b4xlib-index-symtab index))))
+              (maphash (lambda (name entries)
+                         (puthash name (nreverse entries) infos))
+                       infos)
+              (let ((index (list :candidates (delete-dups (delq nil candidates))
+                                 :infos infos)))
+                (setq index (b4x-project--disk-cache-write 'b4xlib-symbol-index key index))
+                (puthash key index b4x-nav--b4xlib-symbol-index-cache)
+                index)))))))
 
 (defun b4x-nav--b4xlib-symbol-infos (project name)
   "Return `.b4xlib' metadata entries matching NAME in PROJECT." 
@@ -596,14 +724,14 @@ When SOURCE-BUFFER is visiting FILE, prefer its live contents."
                        (and module multiline (format "Module: %s" module))))
        (if multiline "\n" " — ")))))
 
-(defun b4x-nav--symbol-before-position (pos)
-  "Return the symbol immediately before POS, or nil."
+(defun b4x-nav--receiver-expression-before-position (pos)
+  "Return the receiver expression immediately before POS, or nil."
   (save-excursion
     (goto-char pos)
-    (skip-chars-backward "A-Za-z0-9_")
+    (skip-chars-backward "A-Za-z0-9_.()")
     (let ((beg (point)))
       (and (< beg pos)
-           (buffer-substring-no-properties beg pos)))))
+           (string-trim (buffer-substring-no-properties beg pos))))))
 
 (defun b4x-nav--type-context-p (beg)
   "Non-nil when BEG starts a type name position like `As Foo'."
@@ -623,13 +751,46 @@ contexts.  Supports an empty prefix immediately after `.'."
            (eq (char-before (car bounds)) ?.))
       (list :beg (car bounds)
             :end (cdr bounds)
-            :receiver (b4x-nav--symbol-before-position (1- (car bounds)))))
+            :receiver (b4x-nav--receiver-expression-before-position
+                       (1- (car bounds)))))
      ((eq (char-before) ?.)
       (list :beg (point)
             :end (point)
-            :receiver (b4x-nav--symbol-before-position (1- (point)))))
+            :receiver (b4x-nav--receiver-expression-before-position
+                       (1- (point)))))
      (bounds
       (list :beg (car bounds) :end (cdr bounds))))))
+
+(defun b4x-nav--builtin-global-doc (name)
+  "Return builtin documentation string for NAME, or nil."
+  (cdr (assoc (downcase name) b4x-nav--builtin-global-docs)))
+
+(defun b4x-nav--builtin-member-returntype (type-name member-name)
+  "Return builtin return type for MEMBER-NAME of TYPE-NAME, or nil."
+  (alist-get (downcase member-name)
+             (alist-get (b4x-nav--normalize-type-name type-name)
+                        b4x-nav--builtin-member-returntypes nil nil #'string=)
+             nil nil #'string=))
+
+(defun b4x-nav--library-member-returntype (project type-name member-name)
+  "Return XML library return type for MEMBER-NAME of TYPE-NAME, or nil."
+  (let ((needle-type (b4x-nav--normalize-type-name type-name))
+        (needle-member (downcase member-name))
+        found)
+    (dolist (api (append (b4x-project-library-apis project)
+                         (b4x-nav--implicit-library-apis project)))
+      (dolist (class (b4x-library-api-classes api))
+        (when (and (null found)
+                   (b4x-library-class-shortname class)
+                   (string= (downcase (b4x-library-class-shortname class)) needle-type))
+          (dolist (member (append (b4x-library-class-method-details class)
+                                  (b4x-library-class-property-details class)
+                                  (b4x-library-class-event-details class)))
+            (when (and (null found)
+                       (b4x-library-member-name member)
+                       (string= (downcase (b4x-library-member-name member)) needle-member))
+              (setq found (b4x-library-member-returntype member)))))))
+    found))
 
 (defun b4x-nav--type-from-decl-tail (name tail)
   "Infer NAME's type from declaration TAIL, or nil.
@@ -679,30 +840,170 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
               (setq found (match-string 2 trimmed)))))
         found))))
 
-(defun b4x-nav--infer-receiver-type (receiver)
-  "Infer the B4X type of RECEIVER in the current buffer, or nil."
+(defun b4x-nav--sub-returntype-from-line (line)
+  "Return the declared return type from Sub signature LINE, or nil."
+  (let ((case-fold-search t))
+    (when (and line
+               (string-match
+                (rx line-start (* space)
+                    (optional (or "Public" "Private") (+ space))
+                    "Sub" (+ space)
+                    (+ (any "A-Za-z_") (* (any "A-Za-z0-9_")))
+                    (* space)
+                    (optional "(" (*? anything) ")" (* space))
+                    (optional "As" (+ space)
+                              (group (+ (any "A-Za-z0-9_.()")))))
+                line))
+      (match-string 1 line))))
+
+(defun b4x-nav--project-member-returntype (tab type-name member-name &optional source-buffer)
+  "Return project member return type for MEMBER-NAME of TYPE-NAME, or nil."
+  (let ((needle-type (b4x-nav--normalize-type-name type-name))
+        (needle-member (downcase member-name))
+        found)
+    (dolist (file (b4x-symtab-files tab))
+      (when (and (null found)
+                 (string= (downcase (file-name-base file)) needle-type))
+        (dolist (sym (b4x-nav--parse-source
+                      (or (and (b4x-nav--buffer-visits-file-p source-buffer file)
+                               (with-current-buffer source-buffer (buffer-string)))
+                          (with-temp-buffer
+                            (insert-file-contents file)
+                            (buffer-string)))
+                      file))
+          (when (and (null found)
+                     (eq (b4x-sym-kind sym) 'sub)
+                     (string= (downcase (b4x-sym-name sym)) needle-member))
+            (setq found (b4x-nav--sub-returntype-from-line
+                         (b4x-nav--sub-signature sym source-buffer)))))))
+    found))
+
+(defun b4x-nav--b4xlib-member-returntype (project type-name member-name)
+  "Return `.b4xlib' member return type for MEMBER-NAME of TYPE-NAME, or nil."
+  (let ((needle-type (b4x-nav--normalize-type-name type-name))
+        (needle-member (downcase member-name))
+        found)
+    (dolist (index (b4x-nav--project-b4xlib-indices project))
+      (dolist (module (b4x-nav-b4xlib-index-module-files index))
+        (when (and (null found)
+                   (string= (downcase (car module)) needle-type))
+          (dolist (sym (b4x-nav-lookup (b4x-nav-b4xlib-index-symtab index) member-name))
+            (when (and (null found)
+                       (eq (b4x-sym-kind sym) 'sub)
+                       (string= (downcase (b4x-sym-name sym)) needle-member)
+                       (equal (b4x-sym-file sym) (cdr module)))
+              (setq found (b4x-nav--sub-returntype-from-line
+                           (b4x-nav--sub-signature sym))))))))
+    found))
+
+(defun b4x-nav--strip-line-comment (line)
+  "Return LINE without a trailing single-quote comment."
+  (car (split-string line "'" t)))
+
+(defun b4x-nav--assignment-rhs (name line)
+  "Return the right-hand side assigned to NAME in LINE, or nil."
   (let ((case-fold-search t)
-        (found nil))
-    (save-excursion
-      (goto-char (point-min))
-      (while (and (not found)
-                  (re-search-forward
-                   (rx line-start (* space)
-                       (or "Dim" "Public" "Private") (+ space)
-                       (group (+ nonl)))
-                   nil t))
-        (setq found (b4x-nav--type-from-decl-tail receiver (match-string 1))))
-      (goto-char (point-min))
-      (while (and (not found)
-                  (re-search-forward b4x-nav--sub-re nil t))
-        (setq found (b4x-nav--type-from-sub-params
-                     receiver
-                     (buffer-substring-no-properties
-                      (line-beginning-position) (line-end-position))))))
-    (or found
-        (when (string-match-p (rx bos (any "A-Z") (* (any "A-Za-z0-9_")) eos)
-                              receiver)
-          receiver))))
+        (needle (downcase name))
+        (trimmed (string-trim (b4x-nav--strip-line-comment line))))
+    (when (and (string-match
+                (rx bos
+                    (optional (or "Dim" "Public" "Private") (+ space))
+                    (group (+ (any "A-Za-z_") (* (any "A-Za-z0-9_"))))
+                    (* space) "=" (* space)
+                    (group (* nonl))
+                    eos)
+                trimmed)
+               (string= (downcase (match-string 1 trimmed)) needle))
+      (string-trim (match-string 2 trimmed)))))
+
+(defun b4x-nav--infer-assignment-type (name project tab source-buffer seen)
+  "Infer NAME's type from the nearest previous assignment in SOURCE-BUFFER."
+  (with-current-buffer (or source-buffer (current-buffer))
+    (when-let ((bounds (b4x-nav--current-sub-bounds)))
+      (save-excursion
+        (goto-char (line-beginning-position))
+        (let ((limit (car bounds))
+              found)
+          (while (and (null found)
+                      (> (point) limit)
+                      (zerop (forward-line -1)))
+            (when-let ((rhs (b4x-nav--assignment-rhs
+                             name
+                             (buffer-substring-no-properties
+                              (line-beginning-position) (line-end-position)))))
+              (setq found (b4x-nav--infer-expression-type
+                           rhs project tab source-buffer seen))))
+          found)))))
+
+(defun b4x-nav--infer-atomic-expression-type (expr project tab source-buffer &optional seen)
+  "Infer the B4X type of atomic EXPR, or nil."
+  (let ((trimmed (string-trim expr)))
+    (cond
+     ((string-match-p (rx bos "CreateMap" (* space) "(") trimmed) "Map")
+     ((string-match-p (rx bos "CreateList" (* space) "(") trimmed) "List")
+     ((string-match-p (rx bos "Array" (* space) "(") trimmed) "Array")
+     ((string-match-p (rx bos ?\" (*? anything) ?\" eos) trimmed) "String")
+     ((string-match-p (rx bos (or "True" "False") eos) trimmed) "Boolean")
+     ((string-match-p (rx bos (? ?-) (+ digit) eos) trimmed) "Int")
+     ((string-match-p (rx bos (? ?-) (+ digit) "." (+ digit) eos) trimmed) "Double")
+     ((b4x-nav--infer-variable-type trimmed project tab source-buffer seen))
+     ((string-match-p (rx bos (any "A-Z") (* (any "A-Za-z0-9_")) eos) trimmed)
+      trimmed))))
+
+(defun b4x-nav--member-returntype (project tab type-name member-name &optional source-buffer)
+  "Return inferred return type for MEMBER-NAME of TYPE-NAME, or nil."
+  (or (b4x-nav--builtin-member-returntype type-name member-name)
+      (b4x-nav--project-member-returntype tab type-name member-name source-buffer)
+      (b4x-nav--library-member-returntype project type-name member-name)
+      (b4x-nav--b4xlib-member-returntype project type-name member-name)))
+
+(defun b4x-nav--infer-variable-type (receiver project tab source-buffer &optional seen)
+  "Infer the B4X type of variable RECEIVER in the current buffer, or nil."
+  (unless (member (downcase receiver) seen)
+    (with-current-buffer (or source-buffer (current-buffer))
+      (let ((case-fold-search t)
+            (found nil)
+            (seen (cons (downcase receiver) seen)))
+        (save-excursion
+          (goto-char (point-min))
+          (while (and (not found)
+                      (re-search-forward
+                       (rx line-start (* space)
+                           (or "Dim" "Public" "Private") (+ space)
+                           (group (+ nonl)))
+                       nil t))
+            (setq found (b4x-nav--type-from-decl-tail receiver (match-string 1))))
+          (goto-char (point-min))
+          (while (and (not found)
+                      (re-search-forward b4x-nav--sub-re nil t))
+            (setq found (b4x-nav--type-from-sub-params
+                         receiver
+                         (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position))))))
+        (or found
+            (b4x-nav--infer-assignment-type receiver project tab source-buffer seen)
+            (when (and project tab (b4x-nav--builtin-global-doc receiver))
+              (b4x-nav--infer-atomic-expression-type receiver project tab source-buffer seen))
+            (when (string-match-p (rx bos (any "A-Z") (* (any "A-Za-z0-9_")) eos)
+                                  receiver)
+              receiver))))))
+
+(defun b4x-nav--infer-expression-type (expr project tab source-buffer &optional seen)
+  "Infer the B4X type of EXPR in the current buffer, or nil."
+  (let* ((parts (split-string (string-trim expr) "\\." t "[[:space:]]*"))
+         (type (and parts (b4x-nav--infer-atomic-expression-type
+                           (car parts) project tab source-buffer seen))))
+    (dolist (member (cdr parts))
+      (setq type (and type
+                      (b4x-nav--member-returntype
+                       project tab type
+                       (replace-regexp-in-string "()\\'" "" member)
+                       source-buffer))))
+    type))
+
+(defun b4x-nav--infer-receiver-type (receiver project tab source-buffer &optional seen)
+  "Infer the B4X type of RECEIVER in the current buffer, or nil."
+  (b4x-nav--infer-expression-type receiver project tab source-buffer seen))
 
 (defun b4x-nav--current-sub-bounds ()
   "Return `(START . END)' for the current Sub, or nil."
@@ -754,24 +1055,31 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
   "Return type/module names available to PROJECT and TAB."
   (let ((key (b4x-project-project-file project)))
     (or (gethash key b4x-nav--type-names-cache)
-        (let (names)
-          (setq names (append b4x-nav--builtin-type-names names))
+        (let (project-names implicit-names explicit-names b4xlib-names names)
           (dolist (file (b4x-symtab-files tab))
-            (push (file-name-base file) names))
+            (push (file-name-base file) project-names))
           (maphash (lambda (_k syms)
                      (dolist (sym syms)
                        (when (eq (b4x-sym-kind sym) 'type)
-                         (push (b4x-sym-name sym) names))))
+                         (push (b4x-sym-name sym) project-names))))
                    (b4x-symtab-by-name tab))
-          (dolist (api (append (b4x-project-library-apis project)
-                               (b4x-nav--implicit-library-apis project)))
-            (dolist (class (b4x-library-api-classes api))
-              (when (b4x-library-class-shortname class)
-                (push (b4x-library-class-shortname class) names))))
+          (dolist (class (mapcan #'b4x-library-api-classes
+                                 (b4x-nav--implicit-library-apis project)))
+            (when (b4x-library-class-shortname class)
+              (push (b4x-library-class-shortname class) implicit-names)))
+          (dolist (class (mapcan #'b4x-library-api-classes
+                                 (b4x-project-library-apis project)))
+            (when (b4x-library-class-shortname class)
+              (push (b4x-library-class-shortname class) explicit-names)))
           (dolist (index (b4x-nav--project-b4xlib-indices project))
             (dolist (module (b4x-nav-b4xlib-index-module-files index))
-              (push (car module) names)))
-          (setq names (delete-dups (delq nil names)))
+              (push (car module) b4xlib-names)))
+          (setq names (b4x-nav--merge-candidate-groups
+                       (nreverse project-names)
+                       b4x-nav--builtin-type-names
+                       (nreverse implicit-names)
+                       (nreverse explicit-names)
+                       (nreverse b4xlib-names)))
           (puthash key names b4x-nav--type-names-cache)
           names))))
 
@@ -785,6 +1093,81 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                       (b4x-project-parse-library-api lib)))
                   names))))
 
+(defun b4x-nav--apis-completion-candidates (apis)
+  "Return symbol candidates exported by APIS."
+  (let (out)
+    (dolist (api apis)
+      (dolist (class (b4x-library-api-classes api))
+        (when-let ((shortname (b4x-library-class-shortname class)))
+          (push shortname out))
+        (setq out (append (b4x-library-class-methods class) out))
+        (setq out (append (b4x-library-class-properties class) out))
+        (setq out (append (b4x-library-class-events class) out))))
+    (delete-dups (delq nil out))))
+
+(defun b4x-nav--apis-symbol-infos (apis name)
+  "Return library-style metadata entries for NAME across APIS."
+  (let ((needle (downcase name))
+        infos)
+    (dolist (api apis)
+      (dolist (class (b4x-library-api-classes api))
+        (when (and (b4x-library-class-shortname class)
+                   (string= (downcase (b4x-library-class-shortname class)) needle))
+          (push (list :kind 'class
+                      :name (b4x-library-class-shortname class)
+                      :signature (format "%s" (b4x-library-class-shortname class))
+                      :comment (b4x-library-class-comment class)
+                      :class class
+                      :library (b4x-library-api-library api))
+                infos))
+        (dolist (member (append (b4x-library-class-method-details class)
+                                (b4x-library-class-property-details class)
+                                (b4x-library-class-event-details class)))
+          (when (and (b4x-library-member-name member)
+                     (string= (downcase (b4x-library-member-name member)) needle))
+            (push (list :kind (b4x-library-member-kind member)
+                        :name (b4x-library-member-name member)
+                        :signature (b4x-project-format-library-member-signature member class)
+                        :comment (b4x-library-member-comment member)
+                        :class class
+                        :library (b4x-library-api-library api)
+                        :member member)
+                  infos)))))
+    (nreverse infos)))
+
+(defun b4x-nav--implicit-library-completion-candidates (project)
+  "Return candidates exported by implicitly available core libraries." 
+  (b4x-nav--apis-completion-candidates (b4x-nav--implicit-library-apis project)))
+
+(defun b4x-nav--implicit-library-symbol-info (project name)
+  "Return metadata entry for NAME from implicit core libraries, or nil."
+  (car (b4x-nav--apis-symbol-infos (b4x-nav--implicit-library-apis project) name)))
+
+(defun b4x-nav--implicit-library-symbol-annotation (project name)
+  "Return a short completion annotation for implicit core symbol NAME." 
+  (when-let ((info (b4x-nav--implicit-library-symbol-info project name)))
+    (format " [%s%s]"
+            (plist-get info :kind)
+            (if-let ((class (and (not (eq (plist-get info :kind) 'class))
+                                 (b4x-library-class-shortname
+                                  (plist-get info :class)))))
+                (format ":%s" class)
+              ""))))
+
+(defun b4x-nav--implicit-library-symbol-doc (project name &optional multiline)
+  "Return documentation string for implicit core symbol NAME, or nil." 
+  (when-let ((info (b4x-nav--implicit-library-symbol-info project name)))
+    (let* ((signature (plist-get info :signature))
+           (comment (plist-get info :comment))
+           (summary (if multiline comment (b4x-project--first-doc-line comment)))
+           (lib (plist-get info :library))
+           (libname (and lib (b4x-library-name lib))))
+      (string-join
+       (delq nil (list signature
+                       (and summary (if multiline summary (format "— %s" summary)))
+                       (and multiline libname (format "\nLibrary: %s" libname))))
+       (if multiline "\n" " ")))))
+
 (defun b4x-nav--normalize-type-name (type-name)
   "Return a normalized key for TYPE-NAME used in member lookup."
   (when type-name
@@ -795,6 +1178,10 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
   (copy-sequence
    (alist-get (b4x-nav--normalize-type-name type-name)
               b4x-nav--builtin-type-members nil nil #'string=)))
+
+(defun b4x-nav--merge-candidate-groups (&rest groups)
+  "Merge GROUPS preserving group priority and removing duplicates." 
+  (delete-dups (delq nil (apply #'append groups))))
 
 (defun b4x-nav--project-type-candidates (tab type-name)
   "Return project candidates for TYPE-NAME from the current symtab TAB."
@@ -811,12 +1198,11 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                           out))))
     (delete-dups (delq nil out))))
 
-(defun b4x-nav--xml-type-candidates (project type-name)
-  "Return library XML member candidates for TYPE-NAME in PROJECT."
+(defun b4x-nav--apis-type-candidates (apis type-name)
+  "Return member candidates for TYPE-NAME exported by APIS."
   (let ((needle (b4x-nav--normalize-type-name type-name))
         out)
-    (dolist (api (append (b4x-project-library-apis project)
-                         (b4x-nav--implicit-library-apis project)))
+    (dolist (api apis)
       (dolist (class (b4x-library-api-classes api))
         (when (and (b4x-library-class-shortname class)
                    (string= (downcase (b4x-library-class-shortname class)) needle))
@@ -824,6 +1210,14 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                             (b4x-library-class-properties class)
                             out)))))
     (delete-dups (delq nil out))))
+
+(defun b4x-nav--implicit-type-candidates (project type-name)
+  "Return implicit core-library member candidates for TYPE-NAME."
+  (b4x-nav--apis-type-candidates (b4x-nav--implicit-library-apis project) type-name))
+
+(defun b4x-nav--explicit-xml-type-candidates (project type-name)
+  "Return explicitly added XML library member candidates for TYPE-NAME."
+  (b4x-nav--apis-type-candidates (b4x-project-library-apis project) type-name))
 
 (defun b4x-nav--b4xlib-type-candidates (project type-name)
   "Return `.b4xlib' member candidates for TYPE-NAME in PROJECT."
@@ -841,19 +1235,22 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                             out)))))
     (delete-dups (delq nil out))))
 
-(defun b4x-nav--contextual-candidates (project tab receiver)
+(defun b4x-nav--contextual-candidates (project tab receiver &optional source-buffer)
   "Return contextual completion candidates for RECEIVER, or nil."
-  (when-let ((type-name (b4x-nav--infer-receiver-type receiver)))
+  (when-let ((type-name (b4x-nav--infer-receiver-type receiver project tab source-buffer)))
     (let ((key (list (b4x-project-project-file project)
                      (b4x-nav--normalize-type-name type-name))))
       (or (gethash key b4x-nav--type-candidates-cache)
-          (let ((cands (delete-dups
-                        (append (b4x-nav--builtin-type-candidates type-name)
-                                (b4x-nav--xml-type-candidates project type-name)
-                                (b4x-nav--b4xlib-type-candidates project type-name)
-                                (b4x-nav--project-type-candidates tab type-name)))))
+          (let ((cands (b4x-nav--merge-candidate-groups
+                        (b4x-nav--project-type-candidates tab type-name)
+                        (b4x-nav--builtin-type-candidates type-name)
+                        (b4x-nav--implicit-type-candidates project type-name)
+                        (b4x-nav--explicit-xml-type-candidates project type-name)
+                        (b4x-nav--b4xlib-type-candidates project type-name))))
             (puthash key cands b4x-nav--type-candidates-cache)
             cands)))))
+
+(defvar b4x-nav--keywords)
 
 (defun b4x-completion-at-point ()
   "B4X completion candidates (global, type-aware, or contextual after `.`)."
@@ -868,29 +1265,37 @@ Handles common initializers such as `Dim M As Map = CreateMap()'."
                  (candidates
                   (cond
                    (receiver
-                    (b4x-nav--contextual-candidates project tab receiver))
+                    (b4x-nav--contextual-candidates project tab receiver source-buffer))
                    ((b4x-nav--type-context-p beg)
                     (b4x-nav--project-type-names project tab))
                    (t
-                    (delete-dups
-                     (append (b4x-nav--current-buffer-symbol-candidates)
-                             (b4x-nav-all-names tab)
-                             (b4x-project-library-completion-candidates project)
-                             (b4x-nav--project-b4xlib-candidates project)
-                             b4x-nav--keywords))))))
+                    (b4x-nav--merge-candidate-groups
+                     (b4x-nav--current-buffer-symbol-candidates)
+                     (b4x-nav-all-names tab)
+                     b4x-nav--builtin-global-candidates
+                     (b4x-nav--implicit-library-completion-candidates project)
+                     (b4x-project-library-completion-candidates project)
+                     (b4x-nav--project-b4xlib-candidates project)
+                     b4x-nav--keywords)))))
             (when candidates
               (list beg end
                     candidates
+                    :display-sort-function #'identity
+                    :cycle-sort-function #'identity
                     :category 'b4x
                     :annotation-function
                     (lambda (cand)
-                      (or (b4x-project-library-symbol-annotation project cand)
+                      (or (and (b4x-nav--builtin-global-doc cand) " [builtin]")
+                          (b4x-project-library-symbol-annotation project cand)
+                          (b4x-nav--implicit-library-symbol-annotation project cand)
                           (b4x-nav--b4xlib-symbol-annotation project cand)))
                     :company-doc-buffer
                     (lambda (cand)
                       (when-let ((doc (or (b4x-nav--project-symbol-doc
                                            tab cand t source-buffer)
+                                          (b4x-nav--builtin-global-doc cand)
                                           (b4x-project-library-symbol-doc project cand t)
+                                          (b4x-nav--implicit-library-symbol-doc project cand t)
                                           (b4x-nav--b4xlib-symbol-doc project cand t))))
                         (b4x-nav--make-doc-buffer doc)))
                     :company-kind (lambda (_c) 'function)))))))))
@@ -950,7 +1355,9 @@ string (for older callers)."
   "Return the best eldoc string at point from project or library metadata."
   (or (b4x-eldoc--project-string)
       (b4x-eldoc--library-string)
-      (b4x-eldoc--b4xlib-string)))
+      (b4x-eldoc--implicit-library-string)
+      (b4x-eldoc--b4xlib-string)
+      (b4x-eldoc--builtin-string)))
 
 (defun b4x-eldoc--project-string ()
   "Return project documentation for the symbol at point, or nil."
@@ -965,12 +1372,24 @@ string (for older callers)."
                 (project (b4x-symtab-project tab)))
       (b4x-project-library-symbol-doc project name))))
 
+(defun b4x-eldoc--implicit-library-string ()
+  "Return one-line implicit-core-library documentation for the symbol at point." 
+  (when-let ((name (b4x-nav--symbol-at-point)))
+    (when-let* ((tab (b4x-nav-table))
+                (project (b4x-symtab-project tab)))
+      (b4x-nav--implicit-library-symbol-doc project name))))
+
 (defun b4x-eldoc--b4xlib-string ()
   "Return one-line `.b4xlib' documentation for the symbol at point, or nil."
   (when-let ((name (b4x-nav--symbol-at-point)))
     (when-let* ((tab (b4x-nav-table))
                 (project (b4x-symtab-project tab)))
       (b4x-nav--b4xlib-symbol-doc project name))))
+
+(defun b4x-eldoc--builtin-string ()
+  "Return one-line builtin documentation for the symbol at point, or nil."
+  (when-let ((name (b4x-nav--symbol-at-point)))
+    (b4x-nav--builtin-global-doc name)))
 
 (defun b4x-nav--sub-signature (sym &optional source-buffer)
   "Return a one-line signature for Sub SYM from its source file.

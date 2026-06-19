@@ -112,8 +112,17 @@
   '((b4xlib . 4) (xml . 3) (aar . 2) (jar . 1))
   "Preference order when several artifacts resolve to the same library name.")
 
+(defcustom b4x-cache-directory
+  (expand-file-name "b4x-cache/" user-emacs-directory)
+  "Directory used for persistent B4X caches on disk."
+  :type 'directory
+  :group 'b4x)
+
+(defconst b4x-project--disk-cache-version 1
+  "Schema version for persistent B4X disk caches.")
+
 (defvar b4x-project--library-api-cache (make-hash-table :test 'equal)
-  "Cache of parsed library XML metadata, keyed by absolute XML path.")
+  "Cache of parsed library XML metadata, keyed by file stamp.")
 
 (defvar b4x-project--available-libraries-cache (make-hash-table :test 'equal)
   "Cache of scanned library folders keyed by folder paths and mtimes.")
@@ -122,14 +131,20 @@
   "Cache of per-project library XML symbol indexes.")
 
 (defvar b4x-project--library-pom-cache (make-hash-table :test 'equal)
-  "Cache of parsed Maven POM metadata, keyed by absolute POM path.")
+  "Cache of parsed Maven POM metadata, keyed by file stamp.")
 
 (defun b4x-project-clear-caches ()
-  "Clear cached library/project metadata."
+  "Clear in-memory cached library/project metadata."
   (setq b4x-project--library-api-cache (make-hash-table :test 'equal))
   (setq b4x-project--available-libraries-cache (make-hash-table :test 'equal))
   (setq b4x-project--library-symbol-index-cache (make-hash-table :test 'equal))
   (setq b4x-project--library-pom-cache (make-hash-table :test 'equal)))
+
+(defun b4x-project-clear-disk-cache ()
+  "Delete persistent B4X caches from disk."
+  (interactive)
+  (when (file-directory-p b4x-cache-directory)
+    (delete-directory b4x-cache-directory t)))
 
 
 ;;; Helpers
@@ -156,6 +171,48 @@
   "Compute the logical project root for PROJECT-FILE."
   (directory-file-name
    (b4x-project-root-of-dir (file-name-directory project-file))))
+
+(defun b4x-project--file-stamp (path)
+  "Return a stable cache stamp for PATH, or nil when it does not exist."
+  (when-let ((attrs (and path (file-exists-p path) (file-attributes path))))
+    (list (expand-file-name path)
+          (file-attribute-size attrs)
+          (file-attribute-modification-time attrs))))
+
+(defun b4x-project--disk-cache-dir (namespace)
+  "Return the persistent cache directory for NAMESPACE."
+  (expand-file-name (format "%s/" namespace) b4x-cache-directory))
+
+(defun b4x-project--disk-cache-file (namespace key)
+  "Return the persistent cache file path for NAMESPACE and KEY."
+  (expand-file-name (concat (md5 (prin1-to-string key)) ".el")
+                    (b4x-project--disk-cache-dir namespace)))
+
+(defun b4x-project--disk-cache-read (namespace key)
+  "Read cached value for NAMESPACE and KEY from disk, or nil."
+  (let ((file (b4x-project--disk-cache-file namespace key)))
+    (when (file-regular-p file)
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents file)
+            (let ((payload (read (current-buffer))))
+              (when (eq (plist-get payload :version)
+                        b4x-project--disk-cache-version)
+                (plist-get payload :value))))
+        (error nil)))))
+
+(defun b4x-project--disk-cache-write (namespace key value)
+  "Persist VALUE for NAMESPACE and KEY to disk and return VALUE."
+  (let ((dir (b4x-project--disk-cache-dir namespace))
+        (file (b4x-project--disk-cache-file namespace key)))
+    (make-directory dir t)
+    (with-temp-file file
+      (let ((print-length nil)
+            (print-level nil))
+        (prin1 (list :version b4x-project--disk-cache-version
+                     :value value)
+               (current-buffer))))
+    value))
 
 
 ;;; Header parsing
@@ -417,35 +474,40 @@ Only top-level `.xml', `.jar', `.aar', and `.b4xlib' files are considered."
   "Return a cache stamp for library directory ENTRY.
 ENTRY has the shape (SOURCE . DIR)."
   (pcase-let ((`(,source . ,dir) entry))
-    (let* ((attrs (and dir (file-directory-p dir) (file-attributes dir)))
-           (mtime (and attrs (file-attribute-modification-time attrs))))
-      (list source dir mtime))))
+    (list source (b4x-project--file-stamp dir))))
 
 (defun b4x-project-available-libraries (project)
   "Return libraries available to PROJECT from core and Additional Libs.
 
 When the same library exists in both places, the Additional Libs entry wins.
 Directory scans are cached and invalidated automatically when the library
-folder mtimes change."
+folder mtimes change.  Results are also persisted on disk between sessions."
   (let* ((dirs (b4x-project-library-dirs project))
          (cache-key (mapcar #'b4x-project--library-dir-stamp dirs)))
     (or (gethash cache-key b4x-project--available-libraries-cache)
-        (let ((table (make-hash-table :test 'equal)))
-          (dolist (entry dirs)
-            (pcase-let ((`(,source . ,dir) entry))
-              (dolist (lib (b4x-project--scan-library-dir dir source))
-                (let ((key (b4x-library-canonical-name lib))
-                      (prev (gethash (b4x-library-canonical-name lib) table)))
-                  (when (or (null prev)
-                            (eq (b4x-library-source lib) 'additional))
-                    (puthash key lib table))))))
-          (let (out)
-            (maphash (lambda (_ lib) (push lib out)) table)
-            (setq out (sort out (lambda (a b)
-                                  (string< (b4x-library-canonical-name a)
-                                           (b4x-library-canonical-name b)))))
-            (puthash cache-key out b4x-project--available-libraries-cache)
-            out)))))
+        (let ((disk (b4x-project--disk-cache-read 'available-libraries cache-key)))
+          (if disk
+              (progn
+                (puthash cache-key disk b4x-project--available-libraries-cache)
+                disk)
+            (let ((table (make-hash-table :test 'equal)))
+              (dolist (entry dirs)
+                (pcase-let ((`(,source . ,dir) entry))
+                  (dolist (lib (b4x-project--scan-library-dir dir source))
+                    (let ((key (b4x-library-canonical-name lib))
+                          (prev (gethash (b4x-library-canonical-name lib) table)))
+                      (when (or (null prev)
+                                (eq (b4x-library-source lib) 'additional))
+                        (puthash key lib table))))))
+              (let (out)
+                (maphash (lambda (_ lib) (push lib out)) table)
+                (setq out (sort out (lambda (a b)
+                                      (string< (b4x-library-canonical-name a)
+                                               (b4x-library-canonical-name b)))))
+                (setq out (b4x-project--disk-cache-write
+                           'available-libraries cache-key out))
+                (puthash cache-key out b4x-project--available-libraries-cache)
+                out)))))))
 
 (defun b4x-project-find-available-library (project name)
   "Return the available library named NAME for PROJECT, or nil.
@@ -580,20 +642,27 @@ LOCAL-NAME is compared against the XML local tag name, ignoring namespaces."
 
 (defun b4x-project-parse-library-api (library)
   "Parse XML metadata for LIBRARY and return a `b4x-library-api', or nil."
-  (when-let ((xml-path (b4x-project-library-xml-path library)))
-    (or (gethash xml-path b4x-project--library-api-cache)
-        (let* ((root (b4x-project--parse-xml-root xml-path))
-               (api (make-b4x-library-api
-                     :library library
-                     :xml-path xml-path
-                     :version (b4x-project--dom-direct-child-text root 'version)
-                     :author (b4x-project--dom-direct-child-text root 'author)
-                     :classes (delq nil
-                                    (mapcar #'b4x-project--parse-library-class
-                                            (b4x-project--dom-direct-children
-                                             root 'class))))))
-          (puthash xml-path api b4x-project--library-api-cache)
-          api))))
+  (when-let* ((xml-path (b4x-project-library-xml-path library))
+              (stamp (b4x-project--file-stamp xml-path)))
+    (or (gethash stamp b4x-project--library-api-cache)
+        (let ((disk (b4x-project--disk-cache-read 'library-api stamp)))
+          (if disk
+              (progn
+                (puthash stamp disk b4x-project--library-api-cache)
+                disk)
+            (let* ((root (b4x-project--parse-xml-root xml-path))
+                   (api (make-b4x-library-api
+                         :library library
+                         :xml-path xml-path
+                         :version (b4x-project--dom-direct-child-text root 'version)
+                         :author (b4x-project--dom-direct-child-text root 'author)
+                         :classes (delq nil
+                                        (mapcar #'b4x-project--parse-library-class
+                                                (b4x-project--dom-direct-children
+                                                 root 'class))))))
+              (setq api (b4x-project--disk-cache-write 'library-api stamp api))
+              (puthash stamp api b4x-project--library-api-cache)
+              api))))))
 
 (defun b4x-project-library-apis (project)
   "Return parsed XML metadata for the libraries referenced by PROJECT."
@@ -605,10 +674,7 @@ LOCAL-NAME is compared against the XML local tag name, ignoring namespaces."
 
 (defun b4x-project--library-api-stamp (api)
   "Return a cache stamp for parsed library API API."
-  (let* ((xml (b4x-library-api-xml-path api))
-         (attrs (and xml (file-attributes xml)))
-         (mtime (and attrs (file-attribute-modification-time attrs))))
-    (list xml mtime)))
+  (b4x-project--file-stamp (b4x-library-api-xml-path api)))
 
 (defun b4x-project--library-symbol-index (project)
   "Return cached XML library completion/doc index for PROJECT.
@@ -622,39 +688,45 @@ between candidates."
                     (b4x-project-libraries project)
                     (mapcar #'b4x-project--library-api-stamp apis))))
     (or (gethash key b4x-project--library-symbol-index-cache)
-        (let ((infos (make-hash-table :test 'equal))
-              candidates)
-          (dolist (api apis)
-            (dolist (class (b4x-library-api-classes api))
-              (when-let ((shortname (b4x-library-class-shortname class)))
-                (push shortname candidates)
-                (push (list :kind 'class
-                            :name shortname
-                            :signature (format "%s" shortname)
-                            :comment (b4x-library-class-comment class)
-                            :class class
-                            :library (b4x-library-api-library api))
-                      (gethash (downcase shortname) infos)))
-              (dolist (member (append (b4x-library-class-method-details class)
-                                      (b4x-library-class-property-details class)
-                                      (b4x-library-class-event-details class)))
-                (when-let ((member-name (b4x-library-member-name member)))
-                  (push member-name candidates)
-                  (push (list :kind (b4x-library-member-kind member)
-                              :name member-name
-                              :signature (b4x-project-format-library-member-signature member class)
-                              :comment (b4x-library-member-comment member)
-                              :class class
-                              :library (b4x-library-api-library api)
-                              :member member)
-                        (gethash (downcase member-name) infos))))))
-          (maphash (lambda (name entries)
-                     (puthash name (nreverse entries) infos))
-                   infos)
-          (let ((index (list :candidates (delete-dups (delq nil candidates))
-                             :infos infos)))
-            (puthash key index b4x-project--library-symbol-index-cache)
-            index)))))
+        (let ((disk (b4x-project--disk-cache-read 'library-symbol-index key)))
+          (if disk
+              (progn
+                (puthash key disk b4x-project--library-symbol-index-cache)
+                disk)
+            (let ((infos (make-hash-table :test 'equal))
+                  candidates)
+              (dolist (api apis)
+                (dolist (class (b4x-library-api-classes api))
+                  (when-let ((shortname (b4x-library-class-shortname class)))
+                    (push shortname candidates)
+                    (push (list :kind 'class
+                                :name shortname
+                                :signature (format "%s" shortname)
+                                :comment (b4x-library-class-comment class)
+                                :class class
+                                :library (b4x-library-api-library api))
+                          (gethash (downcase shortname) infos)))
+                  (dolist (member (append (b4x-library-class-method-details class)
+                                          (b4x-library-class-property-details class)
+                                          (b4x-library-class-event-details class)))
+                    (when-let ((member-name (b4x-library-member-name member)))
+                      (push member-name candidates)
+                      (push (list :kind (b4x-library-member-kind member)
+                                  :name member-name
+                                  :signature (b4x-project-format-library-member-signature member class)
+                                  :comment (b4x-library-member-comment member)
+                                  :class class
+                                  :library (b4x-library-api-library api)
+                                  :member member)
+                            (gethash (downcase member-name) infos))))))
+              (maphash (lambda (name entries)
+                         (puthash name (nreverse entries) infos))
+                       infos)
+              (let ((index (list :candidates (delete-dups (delq nil candidates))
+                                 :infos infos)))
+                (setq index (b4x-project--disk-cache-write 'library-symbol-index key index))
+                (puthash key index b4x-project--library-symbol-index-cache)
+                index)))))))
 
 (defun b4x-project-library-completion-candidates (project)
   "Return completion candidates contributed by PROJECT's library XML metadata."
@@ -772,22 +844,29 @@ line only."
 
 (defun b4x-project-parse-library-pom (pom-path source)
   "Parse Maven POM-PATH discovered in SOURCE and return `b4x-library-pom'."
-  (or (gethash pom-path b4x-project--library-pom-cache)
-      (let* ((root (b4x-project--parse-pom-root pom-path))
-             (parent (car (b4x-project--dom-direct-children-local root "parent")))
-             (pom (make-b4x-library-pom
-                   :path pom-path
-                   :source source
-                   :group-id (or (b4x-project--pom-value root "groupId")
-                                 (and parent (b4x-project--pom-value parent "groupId")))
-                   :artifact-id (b4x-project--pom-value root "artifactId")
-                   :version (or (b4x-project--pom-value root "version")
-                                (and parent (b4x-project--pom-value parent "version")))
-                   :packaging (b4x-project--pom-value root "packaging")
-                   :name (b4x-project--pom-value root "name")
-                   :description (b4x-project--pom-value root "description"))))
-        (puthash pom-path pom b4x-project--library-pom-cache)
-        pom)))
+  (when-let ((stamp (b4x-project--file-stamp pom-path)))
+    (or (gethash stamp b4x-project--library-pom-cache)
+        (let ((disk (b4x-project--disk-cache-read 'library-pom stamp)))
+          (if disk
+              (progn
+                (puthash stamp disk b4x-project--library-pom-cache)
+                disk)
+            (let* ((root (b4x-project--parse-pom-root pom-path))
+                   (parent (car (b4x-project--dom-direct-children-local root "parent")))
+                   (pom (make-b4x-library-pom
+                         :path pom-path
+                         :source source
+                         :group-id (or (b4x-project--pom-value root "groupId")
+                                       (and parent (b4x-project--pom-value parent "groupId")))
+                         :artifact-id (b4x-project--pom-value root "artifactId")
+                         :version (or (b4x-project--pom-value root "version")
+                                      (and parent (b4x-project--pom-value parent "version")))
+                         :packaging (b4x-project--pom-value root "packaging")
+                         :name (b4x-project--pom-value root "name")
+                         :description (b4x-project--pom-value root "description"))))
+              (setq pom (b4x-project--disk-cache-write 'library-pom stamp pom))
+              (puthash stamp pom b4x-project--library-pom-cache)
+              pom))))))
 
 (defun b4x-project-library-poms (project)
   "Return all Maven POM metadata discovered for PROJECT's library folders."
