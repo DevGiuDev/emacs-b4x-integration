@@ -35,9 +35,18 @@
 ;;   M-x b4x-list-available-libraries   list available libraries (clickable)
 ;;   C-c C-m   switch module
 ;;   C-c C-l   jump to layout (from `LoadLayout("...")' or via completion)
+;;   C-c C-y   sync `Files/' layouts with `JsonLayouts/'
+;;   M-x b4x-layout-open-json     open the JSON sidecar for a layout
+;;   M-x b4x-layout-sync-project  sync `Files/' layouts with `JsonLayouts/'
 ;;   C-c C-c   build
 ;;   C-c C-r   run
 ;;   C-c C-e   open in the official B4X IDE under Wine
+;;   C-c a s   select Android device
+;;   C-c a i   install APK on device
+;;   C-c a u   uninstall app from device
+;;   C-c a l   launch app on device
+;;   C-c a r   restart app on device
+;;   C-c a g   stream filtered logcat
 
 ;;; Code:
 
@@ -51,6 +60,7 @@
 (require 'b4x-project)
 (require 'b4x-nav)
 (require 'b4x-flymake)
+(require 'b4x-layout)
 
 
 ;;; Customization
@@ -130,6 +140,17 @@ Inspect it with `b4x-ide-log' if the IDE ever fails to open."
   :group 'b4x
   :type 'string)
 
+(defcustom b4x-b4a-logcat-fallback-specs
+  '("B4A:V" "B4X:V" "AndroidRuntime:E" "System.err:W" "*:S")
+  "Logcat filter specs used when the app PID is not yet available.
+
+When the target app is already running, `b4x-b4a-logcat' prefers
+`adb logcat --pid=...'.  Otherwise it falls back to this quieter tag-based
+filter instead of streaming the full device log.  Values use the same format as
+plain `adb logcat TAG:PRIORITY' arguments."
+  :group 'b4x
+  :type '(repeat string))
+
 (defcustom b4x-emulator-binary "emulator"
   "Android emulator executable used by the B4A hybrid helpers."
   :group 'b4x
@@ -156,6 +177,9 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
   "Buffer name used by Android device wait / hybrid-debug helper commands."
   :group 'b4x
   :type 'string)
+
+(defvar b4x--adb-last-serial nil
+  "Last Android device serial selected for B4A helper commands.")
 
 
 ;;; Faces
@@ -224,13 +248,17 @@ Nil means a file named `b4x-emulator.log' under `temporary-file-directory'."
     (define-key map (kbd "C-c C-i") #'b4x-project-info)
     (define-key map (kbd "C-c C-v") #'b4x-version)
     (define-key map (kbd "C-c C-l") #'b4x-goto-layout)
+    (define-key map (kbd "C-c C-y") #'b4x-layout-sync-project)
     (define-key map (kbd "C-c C-m") #'b4x-switch-module)
     (define-key map (kbd "C-c C-n") #'b4x-new-module)
     (define-key map (kbd "C-c C-s") #'b4x-add-library)
     (define-key map (kbd "C-c C-k") #'b4x-remove-library)
     (define-key map (kbd "C-c C-d") #'b4x-dispatch)
+    (define-key map (kbd "C-c a s") #'b4x-b4a-select-device)
     (define-key map (kbd "C-c a i") #'b4x-b4a-install-apk)
+    (define-key map (kbd "C-c a u") #'b4x-b4a-uninstall-app)
     (define-key map (kbd "C-c a l") #'b4x-b4a-launch-app)
+    (define-key map (kbd "C-c a r") #'b4x-b4a-restart-app)
     (define-key map (kbd "C-c a g") #'b4x-b4a-logcat)
     (define-key map (kbd "C-c a k") #'b4x-b4a-stop-logcat)
     (define-key map (kbd "C-c a v") #'b4x-b4a-list-avds)
@@ -1093,15 +1121,113 @@ The vendored script takes host paths (the platform folder holding the
     (user-error "This command currently supports only B4A projects"))
   proj)
 
-(defun b4x--adb-base-args ()
-  "Return the base ADB argv, including the optional `-s' serial selector."
-  (append (when b4x-adb-serial (list "-s" b4x-adb-serial))))
+(defun b4x--adb-base-args (&optional serial)
+  "Return the base ADB argv, including an optional `-s SERIAL' selector."
+  (let ((target (or serial b4x-adb-serial)))
+    (append (when target (list "-s" target)))))
+
+(defun b4x--adb-command-with-serial (serial &rest args)
+  "Return a shell-safe ADB command line from ARGS targeting SERIAL.
+
+When SERIAL is nil, the command uses the current default device selection."
+  (mapconcat #'shell-quote-argument
+             (cons b4x-adb-binary (append (b4x--adb-base-args serial) args))
+             " "))
 
 (defun b4x--adb-command (&rest args)
   "Return a shell-safe ADB command line from ARGS."
-  (mapconcat #'shell-quote-argument
-             (cons b4x-adb-binary (append (b4x--adb-base-args) args))
-             " "))
+  (apply #'b4x--adb-command-with-serial nil args))
+
+(defun b4x--adb-parse-devices (text)
+  "Parse `adb devices -l' TEXT into a list of device plists.
+
+Each plist includes at least `:serial', `:state', and `:label'."
+  (let (out)
+    (dolist (line (split-string text "\r?\n" t))
+      (let ((trimmed (string-trim line)))
+        (unless (or (string-empty-p trimmed)
+                    (string-match-p (rx bos "List of devices attached" eos) trimmed)
+                    (string-prefix-p "*" trimmed))
+          (when (string-match
+                 (rx bos
+                     (group (+ (not (any blank))))
+                     (+ blank)
+                     (group (+ (not (any blank))))
+                     (? (+ blank) (group (* nonl)))
+                     eos)
+                 trimmed)
+            (let* ((serial (match-string 1 trimmed))
+                   (state (match-string 2 trimmed))
+                   (tail (or (match-string 3 trimmed) ""))
+                   (model (when (string-match (rx "model:" (group (+ (not (any blank))))) tail)
+                            (match-string 1 tail)))
+                   (label (string-trim
+                           (format "%s [%s]%s"
+                                   serial state
+                                   (if model (format " %s" model) "")))))
+              (push (list :serial serial
+                          :state state
+                          :model model
+                          :tail tail
+                          :label label)
+                    out))))))
+    (nreverse out)))
+
+(defun b4x--adb-list-devices ()
+  "Return the current Android devices reported by `adb devices -l'."
+  (b4x--adb-parse-devices
+   (shell-command-to-string
+    (mapconcat #'shell-quote-argument (list b4x-adb-binary "devices" "-l") " "))))
+
+(defun b4x--adb-device-summary (devices)
+  "Return a short human-readable summary string for DEVICES."
+  (string-join
+   (mapcar (lambda (dev)
+             (format "%s=%s"
+                     (plist-get dev :serial)
+                     (plist-get dev :state)))
+           devices)
+   ", "))
+
+(defun b4x--adb-resolve-serial (&optional require-ready prompt)
+  "Return the Android device serial to use for helper commands.
+
+If `b4x-adb-serial' is set, it wins.  Otherwise the function auto-selects the
+sole connected device, reuses the last chosen device when still present, or
+prompts when multiple candidates exist.  When REQUIRE-READY is non-nil, only
+fully ready `device' entries are considered.  With PROMPT non-nil, always
+prompt when candidates exist."
+  (cond
+   ((and b4x-adb-serial (not (string-empty-p b4x-adb-serial)))
+    b4x-adb-serial)
+   (t
+    (let* ((devices (b4x--adb-list-devices))
+           (pool (seq-filter (lambda (dev)
+                               (if require-ready
+                                   (string= (plist-get dev :state) "device")
+                                 t))
+                             devices))
+           (last (and b4x--adb-last-serial
+                      (seq-find (lambda (dev)
+                                  (string= (plist-get dev :serial) b4x--adb-last-serial))
+                                pool))))
+      (cond
+       ((and last (not prompt))
+        (plist-get last :serial))
+       ((null pool)
+        (if require-ready
+            (if devices
+                (user-error "No ready Android devices (%s)" (b4x--adb-device-summary devices))
+              (user-error "No Android devices found via `%s devices -l'" b4x-adb-binary))
+          nil))
+       ((and (= (length pool) 1) (not prompt))
+        (setq b4x--adb-last-serial (plist-get (car pool) :serial)))
+       (t
+        (let* ((choices (mapcar (lambda (dev)
+                                  (cons (plist-get dev :label) (plist-get dev :serial)))
+                                pool))
+               (choice (completing-read "Android device: " choices nil t)))
+          (setq b4x--adb-last-serial (cdr (assoc choice choices))))))))))
 
 (defun b4x--b4a-build-package (proj)
   "Return the Android package id declared by PROJ, or nil."
@@ -1109,6 +1235,11 @@ The vendored script takes host paths (the platform folder holding the
     (let ((parts (split-string build "," t "[[:space:]]+")))
       (when (> (length parts) 1)
         (nth 1 parts)))))
+
+(defun b4x--b4a-package-or-error (proj)
+  "Return PROJ's Android package id, or signal a user error."
+  (or (b4x--b4a-build-package proj)
+      (user-error "Could not determine Android package id from BuildN=")))
 
 (defun b4x--b4a-find-apk (proj)
   "Return the best APK candidate generated for the B4A project PROJ.
@@ -1131,37 +1262,98 @@ names such as `unaligned' or split package archives when possible."
                     (< (nth 1 a) (nth 1 b)))))))
     (caar ranked)))
 
-(defun b4x--b4a-pidof (package)
-  "Return the device PID string for PACKAGE, or nil if unavailable."
-  (let* ((cmd (b4x--adb-command "shell" "pidof" "-s" package))
+(defun b4x--b4a-launch-command (package &optional serial)
+  "Return the ADB shell command that launches PACKAGE on SERIAL."
+  (b4x--adb-command-with-serial serial
+                                "shell" "monkey" "-p" package
+                                "-c" "android.intent.category.LAUNCHER" "1"))
+
+(defun b4x--b4a-force-stop-command (package &optional serial)
+  "Return the ADB shell command that force-stops PACKAGE on SERIAL."
+  (b4x--adb-command-with-serial serial
+                                "shell" "am" "force-stop" package))
+
+(defun b4x--b4a-uninstall-command (package &optional serial)
+  "Return the ADB command that uninstalls PACKAGE from SERIAL."
+  (b4x--adb-command-with-serial serial "uninstall" package))
+
+(defun b4x--b4a-restart-command (package &optional serial)
+  "Return the shell command that force-stops and relaunches PACKAGE on SERIAL."
+  (format "%s && %s"
+          (b4x--b4a-force-stop-command package serial)
+          (b4x--b4a-launch-command package serial)))
+
+(defun b4x--b4a-pidof (package &optional serial)
+  "Return the device PID string for PACKAGE on SERIAL, or nil if unavailable."
+  (let* ((cmd (b4x--adb-command-with-serial serial "shell" "pidof" "-s" package))
          (out (shell-command-to-string cmd))
          (pid (string-trim out)))
     (when (string-match-p (rx bos (+ digit) eos) pid)
       pid)))
+
+(defun b4x--b4a-logcat-args (proj &optional serial)
+  "Return the `adb logcat' argv list for PROJ on SERIAL.
+
+Prefers PID filtering when the app is already running.  Otherwise falls back
+to the quieter tag-based filter configured in `b4x-b4a-logcat-fallback-specs'."
+  (let* ((pkg (b4x--b4a-build-package proj))
+         (pid (and pkg (b4x--b4a-pidof pkg serial))))
+    (append (b4x--adb-base-args serial)
+            (if pid
+                (list "logcat" (format "--pid=%s" pid))
+              (append (list "logcat") b4x-b4a-logcat-fallback-specs)))))
 
 (defun b4x--b4a-logcat-buffer ()
   "Return the dedicated B4A logcat buffer."
   (get-buffer-create b4x-b4a-logcat-buffer-name))
 
 ;;;###autoload
+(defun b4x-b4a-select-device ()
+  "Select the Android device to use for subsequent B4A helper commands.
+
+The choice is cached in `b4x--adb-last-serial' for the current Emacs session.
+Set `b4x-adb-serial' if you want a persistent explicit device override."
+  (interactive)
+  (let ((serial (b4x--adb-resolve-serial t t)))
+    (message "B4X: selected Android device %s" serial)))
+
+;;;###autoload
 (defun b4x-b4a-install-apk ()
-  "Install the current B4A project's APK on the connected Android device."
+  "Install the current B4A project's APK on the selected Android device."
   (interactive)
   (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (serial (b4x--adb-resolve-serial t))
          (apk (or (b4x--b4a-find-apk proj)
                   (user-error "No APK found under %s/Objects; build first"
                               (b4x-project-project-dir proj)))))
-    (compile (b4x--adb-command "install" "-r" apk))))
+    (compile (b4x--adb-command-with-serial serial "install" "-r" apk))))
+
+;;;###autoload
+(defun b4x-b4a-uninstall-app ()
+  "Uninstall the current B4A project's app from the selected Android device."
+  (interactive)
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (serial (b4x--adb-resolve-serial t))
+         (pkg (b4x--b4a-package-or-error proj)))
+    (compile (b4x--b4a-uninstall-command pkg serial))))
 
 ;;;###autoload
 (defun b4x-b4a-launch-app ()
-  "Launch the current B4A project on the connected device with `adb shell monkey'."
+  "Launch the current B4A project on the selected Android device."
   (interactive)
   (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
-         (pkg (or (b4x--b4a-build-package proj)
-                  (user-error "Could not determine Android package id from BuildN="))))
-    (compile (b4x--adb-command "shell" "monkey" "-p" pkg
-                               "-c" "android.intent.category.LAUNCHER" "1"))))
+         (serial (b4x--adb-resolve-serial t))
+         (pkg (b4x--b4a-package-or-error proj)))
+    (compile (b4x--b4a-launch-command pkg serial))))
+
+;;;###autoload
+(defun b4x-b4a-restart-app ()
+  "Force-stop and relaunch the current B4A project on the selected device."
+  (interactive)
+  (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (serial (b4x--adb-resolve-serial t))
+         (pkg (b4x--b4a-package-or-error proj)))
+    (compile (b4x--b4a-restart-command pkg serial))))
 
 ;;;###autoload
 (defun b4x-b4a-stop-logcat ()
@@ -1176,45 +1368,44 @@ names such as `unaligned' or split package archives when possible."
 (defun b4x-b4a-logcat (&optional clear)
   "Stream Android logcat for the current B4A project into `b4x-b4a-logcat-buffer-name'.
 
-With prefix argument CLEAR, clear the device log first.  When the app is
-already running and its PID can be resolved, filter logcat to that process."
+With prefix argument CLEAR, clear the selected device log first.  When the app
+is already running and its PID can be resolved, filter logcat to that process.
+Otherwise fall back to the quieter tag filter configured by
+`b4x-b4a-logcat-fallback-specs'."
   (interactive "P")
   (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
+         (serial (b4x--adb-resolve-serial t))
          (pkg (b4x--b4a-build-package proj))
-         (buf (b4x--b4a-logcat-buffer))
-         (pid (and pkg (b4x--b4a-pidof pkg))))
+         (pid (and pkg (b4x--b4a-pidof pkg serial)))
+         (buf (b4x--b4a-logcat-buffer)))
     (when clear
       (apply #'call-process b4x-adb-binary nil nil nil
-             (append (b4x--adb-base-args) (list "logcat" "-c"))))
+             (append (b4x--adb-base-args serial) (list "logcat" "-c"))))
     (b4x-b4a-stop-logcat)
     (with-current-buffer buf
       (let ((inhibit-read-only t))
         (erase-buffer)
         (special-mode)
         (setq-local default-directory (b4x-project-project-dir proj))))
-    (let* ((proc-args (append (b4x--adb-base-args)
-                              (if pid
-                                  (list "logcat" (format "--pid=%s" pid))
-                                (list "logcat"))))
-           (proc (make-process
-                  :name "b4x-logcat"
-                  :buffer buf
-                  :command (cons b4x-adb-binary proc-args)
-                  :noquery t
-                  :filter (lambda (_proc chunk)
-                            (when (buffer-live-p buf)
-                              (with-current-buffer buf
-                                (let ((inhibit-read-only t))
-                                  (goto-char (point-max))
-                                  (insert chunk))))))))
+    (let ((proc (make-process
+                 :name "b4x-logcat"
+                 :buffer buf
+                 :command (cons b4x-adb-binary (b4x--b4a-logcat-args proj serial))
+                 :noquery t
+                 :filter (lambda (_proc chunk)
+                           (when (buffer-live-p buf)
+                             (with-current-buffer buf
+                               (let ((inhibit-read-only t))
+                                 (goto-char (point-max))
+                                 (insert chunk))))))))
       (set-process-query-on-exit-flag proc nil)
       (display-buffer buf)
       (message "B4X: logcat %s%s"
                (if clear "(cleared) " "")
                (cond
                 (pid (format "for %s (pid %s)" pkg pid))
-                (pkg (format "for %s (unfiltered)" pkg))
-                (t "(unfiltered)"))))))
+                (pkg (format "for %s (filtered tags)" pkg))
+                (t "(filtered tags)"))))))
 
 (defun b4x--b4a-emulator-log-file ()
   "Return the log file used for detached Android emulator launches."
@@ -1253,16 +1444,20 @@ already running and its PID can be resolved, filter logcat to that process."
             (mapconcat #'shell-quote-argument b4x-b4a-emulator-args " ")
             (shell-quote-argument logfile))))
 
-(defun b4x--b4a-wait-script ()
-  "Return the shell script body that waits for Android boot completion via ADB."
-  (let ((adb (b4x--adb-command)))
+(defun b4x--b4a-wait-script (&optional serial)
+  "Return the shell script body that waits for Android boot completion via ADB.
+
+When SERIAL is non-nil, target that specific Android device."
+  (let ((adb (b4x--adb-command-with-serial serial)))
     (format "%s wait-for-device && until [ \"$(%s shell getprop sys.boot_completed 2>/dev/null | tr -d '\\r')\" = 1 ]; do sleep 2; done && echo Device ready"
             adb adb)))
 
-(defun b4x--b4a-wait-shell-command ()
-  "Return a shell command that waits for Android boot completion via ADB."
+(defun b4x--b4a-wait-shell-command (&optional serial)
+  "Return a shell command that waits for Android boot completion via ADB.
+
+When SERIAL is non-nil, target that specific Android device."
   (format "bash -lc %s"
-          (shell-quote-argument (b4x--b4a-wait-script))))
+          (shell-quote-argument (b4x--b4a-wait-script serial))))
 
 (defun b4x--open-project-in-ide (proj)
   "Open PROJ in the official B4X IDE under Wine."
@@ -1307,9 +1502,12 @@ already running and its PID can be resolved, filter logcat to that process."
 
 ;;;###autoload
 (defun b4x-b4a-wait-for-device ()
-  "Wait for an Android device/emulator to become fully booted."
+  "Wait for an Android device/emulator to become fully booted.
+
+If multiple devices are currently visible and no explicit `b4x-adb-serial' is
+configured, auto-select one target device for this wait command."
   (interactive)
-  (compile (b4x--b4a-wait-shell-command)))
+  (compile (b4x--b4a-wait-shell-command (b4x--adb-resolve-serial nil))))
 
 ;;;###autoload
 (defun b4x-b4a-debug-in-ide (&optional avd)
@@ -1317,10 +1515,13 @@ already running and its PID can be resolved, filter logcat to that process."
 
 With prefix argument, prompt for an AVD and launch it natively first.  Then
 wait for ADB/device boot completion asynchronously and finally open `B4A.exe'
-under Wine so the official debugger can be used from the IDE."
+under Wine so the official debugger can be used from the IDE.  If multiple
+Android devices are already visible and no explicit `b4x-adb-serial' is set,
+auto-select one target device for the wait step."
   (interactive (list (and current-prefix-arg (b4x--b4a-read-avd))))
   (let* ((proj (b4x--ensure-b4a-project (b4x--current-project)))
          (project-file (b4x-project-project-file proj))
+         (serial (b4x--adb-resolve-serial nil))
          (buf (get-buffer-create b4x-b4a-device-buffer-name)))
     (when avd
       (call-process-shell-command (b4x--b4a-emulator-shell-command avd))
@@ -1331,7 +1532,7 @@ under Wine so the official debugger can be used from the IDE."
         (compilation-mode)))
     (let ((proc (make-process :name "b4x-android-wait"
                               :buffer buf
-                              :command (list "bash" "-lc" (b4x--b4a-wait-script))
+                              :command (list "bash" "-lc" (b4x--b4a-wait-script serial))
                               :noquery t
                               :sentinel
                               (lambda (p _event)
@@ -1341,7 +1542,8 @@ under Wine so the official debugger can be used from the IDE."
                                   (message "B4X: device ready; project opened in B4A IDE. Use Run/Debug there."))))))
       (set-process-query-on-exit-flag proc nil)
       (display-buffer buf)
-      (message "B4X: waiting for Android device/emulator..."))))
+      (message "B4X: waiting for Android device/emulator%s..."
+               (if serial (format " %s" serial) "")))))
 
 
 ;;; Open the B4X IDE under Wine
@@ -1489,18 +1691,26 @@ at point that matches a declared layout."
     ("k" "Remove library"      b4x-remove-library)
     ("m" "Switch module"       b4x-switch-module)
     ("l" "Jump to layout"      b4x-goto-layout)]
+   ["Layouts"
+    ("j" "Open JSON sidecar"   b4x-layout-open-json)
+    ("x" "Export -> JSON"      b4x-layout-export)
+    ("I" "Import <- JSON"      b4x-layout-import)
+    ("y" "Sync project"        b4x-layout-sync-project)]
    ["Build & Run"
     ("c" "Build"               b4x-build)
     ("r" "Run"                 b4x-run-project)
     ("e" "Open in B4X IDE"    b4x-open-in-ide)
     ("L" "Show IDE log"        b4x-ide-log)]
    ["B4A / Android"
+    ("a s" "Select device"     b4x-b4a-select-device)
     ("a v" "List AVDs"         b4x-b4a-list-avds)
     ("a e" "Start emulator"    b4x-b4a-start-emulator)
     ("a w" "Wait for device"   b4x-b4a-wait-for-device)
     ("a d" "Debug in B4A IDE"  b4x-b4a-debug-in-ide)
     ("a i" "Install APK"       b4x-b4a-install-apk)
+    ("a u" "Uninstall app"     b4x-b4a-uninstall-app)
     ("a l" "Launch app"        b4x-b4a-launch-app)
+    ("a r" "Restart app"       b4x-b4a-restart-app)
     ("a g" "Logcat"            b4x-b4a-logcat)
     ("a k" "Stop logcat"       b4x-b4a-stop-logcat)]])
 

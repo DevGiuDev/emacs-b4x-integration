@@ -10,6 +10,7 @@
 (require 'b4x-wine)
 (require 'b4x-nav)
 (require 'b4x-flymake)
+(require 'b4x-layout)
 (require 'b4x)
 
 (defconst b4x-test--proyprueba
@@ -23,6 +24,22 @@
 (defconst b4x-test--emacs-testing
   (expand-file-name "~/dev/B4XProj/emacs-testing/B4J/emacs-testing.b4j")
   "Real multi-platform B4XPages project with shared root + B4J subfolder.")
+
+(defconst b4x-test--emacs-testing-bjl
+  (expand-file-name "~/dev/B4XProj/emacs-testing/B4J/Files/MainPage.bjl")
+  "Real B4J layout used for layout-converter tests.")
+
+(defconst b4x-test--emacs-testing-bal
+  (expand-file-name "~/dev/B4XProj/emacs-testing/B4A/Files/mainpage.bal")
+  "Real B4A layout used for layout-converter tests.")
+
+(defconst b4x-test--emacs-testing-bil
+  (expand-file-name "~/dev/B4XProj/emacs-testing/B4i/Files/mainpage.bil")
+  "Real B4I layout used for layout-converter tests.")
+
+(defconst b4x-test--birthday-reminder-b4a
+  (expand-file-name "~/dev/B4XProj/B4X-Birthday-Reminder/B4A/BirthdayReminder.b4a")
+  "Real B4A client project used for Android workflow smoke tests.")
 
 (defun b4x-test--project-exists-p (file)
   "Non-nil if FILE exists on disk (skips tests otherwise)."
@@ -163,6 +180,46 @@
                        (file-name-directory b4x-test--emacs-testing)))
       (should (equal (project-current nil (expand-file-name dir))
                      '(b4x . "/home/devgiu/dev/B4XProj/emacs-testing"))))))
+
+(ert-deftest b4x-layout/read-real-b4j-layout ()
+  (b4x-test-skip-unless b4x-test--emacs-testing-bjl
+    (let* ((layout (b4x-layout-read-file b4x-test--emacs-testing-bjl))
+           (header (b4x-layout-object-get layout "LayoutHeader"))
+           (variants (b4x-layout-object-get layout "Variants"))
+           (data (b4x-layout-object-get layout "Data")))
+      (should (b4x-layout-object-p layout))
+      (should (b4x-layout-object-p header))
+      (should (= (b4x-layout-object-get header "Version") 5))
+      (should (= (length variants) 1))
+      (should (equal (b4x-layout-object-get data "name") "Main")))))
+
+(ert-deftest b4x-layout/binary-roundtrip-real-layouts ()
+  (dolist (file (list b4x-test--emacs-testing-bjl
+                      b4x-test--emacs-testing-bal
+                      b4x-test--emacs-testing-bil))
+    (b4x-test-skip-unless file
+      (let* ((layout (b4x-layout-read-file file))
+             (tmp (make-temp-file "b4x-layout-" nil
+                                  (concat "." (file-name-extension file)))))
+        (unwind-protect
+            (progn
+              (b4x-layout-write-file layout tmp)
+              (should (b4x-layout-equal-p layout (b4x-layout-read-file tmp))))
+          (when (file-exists-p tmp)
+            (delete-file tmp)))))))
+
+(ert-deftest b4x-layout/json-roundtrip-real-layout ()
+  (b4x-test-skip-unless b4x-test--emacs-testing-bjl
+    (let* ((layout (b4x-layout-read-file b4x-test--emacs-testing-bjl))
+           (json (make-temp-file "b4x-layout-" nil ".json"))
+           (tmp (make-temp-file "b4x-layout-" nil ".bjl")))
+      (unwind-protect
+          (progn
+            (b4x-layout-write-json-file layout json)
+            (b4x-layout-write-file (b4x-layout-read-json-file json) tmp)
+            (should (b4x-layout-equal-p layout (b4x-layout-read-file tmp))))
+        (when (file-exists-p json) (delete-file json))
+        (when (file-exists-p tmp) (delete-file tmp))))))
 
 (provide 'b4x-test)
 ;;; b4x-test.el ends here
@@ -455,6 +512,42 @@
             (should (member "Ready" cands))))
       (delete-directory root t))))
 
+(ert-deftest b4x-project/library-xml-api-disk-cache ()
+  (let* ((root (make-temp-file "b4x-libxml-cache-" t))
+         (cache-dir (expand-file-name "cache" root))
+         (platform-dir (expand-file-name "B4J" root))
+         (core-dir (expand-file-name "core-libs" root))
+         (ini-file (expand-file-name "b4xV5.ini" root))
+         (project-file (expand-file-name "Demo.b4j" platform-dir))
+         (xml-file (expand-file-name "Foo.xml" core-dir))
+         (b4x-cache-directory cache-dir))
+    (unwind-protect
+        (progn
+          (make-directory platform-dir t)
+          (make-directory core-dir t)
+          (b4x-test--write xml-file "<root><class><shortname>Foo</shortname></class></root>")
+          (b4x-test--write ini-file (format "LibrariesFolder=%s\n" core-dir))
+          (b4x-test--write project-file
+                           (mapconcat #'identity
+                                      '("AppType=JavaFX"
+                                        "Library1=Foo"
+                                        "NumberOfLibraries=1"
+                                        "NumberOfModules=0"
+                                        "Version=10.5"
+                                        "@EndOfDesignText@")
+                                      "\n"))
+          (let* ((proj (b4x-load-project project-file ini-file))
+                 (lib (b4x-project-find-available-library proj "Foo"))
+                 (api1 (b4x-project-parse-library-api lib)))
+            (should (equal (b4x-library-api-xml-path api1) xml-file))
+            (b4x-project-clear-caches)
+            (cl-letf (((symbol-function 'b4x-project--parse-xml-root)
+                       (lambda (&rest _)
+                         (error "disk cache miss"))))
+              (let ((api2 (b4x-project-parse-library-api lib)))
+                (should (equal (b4x-library-api-xml-path api2) xml-file))))))
+      (delete-directory root t))))
+
 (ert-deftest b4x-nav/completion-includes-library-xml-candidates ()
   (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j"))
          (tab (make-b4x-symtab :project proj)))
@@ -626,6 +719,166 @@
           (should (member "ContainsKey" cands))
           (should (member "Put" cands)))))))
 
+(ert-deftest b4x-nav/contextual-chained-core-members-from-return-types ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Private Sub Test\n"
+                "    Dim Entry As Map = CreateMap()\n"
+                "    Entry.Keys.\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Entry.Keys.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "Add" cands))
+          (should (member "Get" cands))
+          (should (member "Size" cands)))))))
+
+(ert-deftest b4x-nav/completion-includes-builtin-global-constructors ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-completion-candidates)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-candidates)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "CreateM")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "CreateM" (nth 2 capf)))
+               (annotation-fn (plist-get (nthcdr 3 capf) :annotation-function))
+               (doc-fn (plist-get (nthcdr 3 capf) :company-doc-buffer)))
+          (should (member "CreateMap" cands))
+          (should (equal (funcall annotation-fn "CreateMap") " [builtin]"))
+          (should (string-match-p "CreateMap"
+                                  (with-current-buffer (funcall doc-fn "CreateMap")
+                                    (buffer-string)))))))))
+
+(ert-deftest b4x-nav/contextual-project-member-returntype-inference ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (file "/tmp/MyType.bas")
+         (tab (make-b4x-symtab :project proj)))
+    (dolist (sym (list (make-b4x-sym :name "FetchItems" :kind 'sub :file file :line 2)
+                       (make-b4x-sym :name "Init" :kind 'sub :file file :line 5)))
+      (b4x-nav--add-sym tab sym))
+    (setf (b4x-symtab-files tab) (list file))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (setq-local buffer-file-name file)
+        (insert "Type MyType\nEnd Type\n"
+                "Public Sub FetchItems As List\nEnd Sub\n"
+                "Public Sub Init\n  Dim T As MyType\n  T.FetchItems.\nEnd Sub\n")
+        (goto-char (point-min))
+        (search-forward "T.FetchItems.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "Add" cands))
+          (should (member "Get" cands)))))))
+
+(ert-deftest b4x-nav/contextual-assignment-inference-from-project-return ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (file "/tmp/MyType.bas")
+         (tab (make-b4x-symtab :project proj)))
+    (dolist (sym (list (make-b4x-sym :name "FetchItems" :kind 'sub :file file :line 2)
+                       (make-b4x-sym :name "Init" :kind 'sub :file file :line 5)))
+      (b4x-nav--add-sym tab sym))
+    (setf (b4x-symtab-files tab) (list file))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (setq-local buffer-file-name file)
+        (insert "Type MyType\nEnd Type\n"
+                "Public Sub FetchItems As List\nEnd Sub\n"
+                "Public Sub Init\n"
+                "  Dim T As MyType\n"
+                "  Dim Items\n"
+                "  Items = T.FetchItems\n"
+                "  Items.\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Items.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "Add" cands))
+          (should (member "Get" cands)))))))
+
+(ert-deftest b4x-nav/contextual-assignment-inference-through-variable-alias ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj)))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--implicit-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-project-library-apis)
+               (lambda (_proj) nil))
+              ((symbol-function 'b4x-nav--project-b4xlib-indices)
+               (lambda (_proj) nil)))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "Private Sub Test\n"
+                "  Dim Entry\n"
+                "  Dim Keys\n"
+                "  Entry = CreateMap()\n"
+                "  Keys = Entry.Keys\n"
+                "  Keys.\n"
+                "End Sub\n")
+        (goto-char (point-min))
+        (search-forward "Keys.")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (member "Add" cands))
+          (should (member "Get" cands))
+          (should (member "Size" cands)))))))
+
+(ert-deftest b4x-nav/global-completion-ranks-project-before-libs ()
+  (let* ((proj (make-b4x-project :project-file "/tmp/Demo.b4j" :platform 'b4j))
+         (tab (make-b4x-symtab :project proj)))
+    (dolist (sym (list (make-b4x-sym :name "ProjectFoo" :kind 'sub :file "/tmp/a.bas" :line 1)))
+      (b4x-nav--add-sym tab sym))
+    (cl-letf (((symbol-function 'b4x-nav-table) (lambda (&optional _no-cache) tab))
+              ((symbol-function 'b4x-nav--current-buffer-symbol-candidates)
+               (lambda () '("LocalFoo")))
+              ((symbol-function 'b4x-nav--implicit-library-completion-candidates)
+               (lambda (_proj) '("CoreFoo")))
+              ((symbol-function 'b4x-project-library-completion-candidates)
+               (lambda (_proj) '("LibFoo")))
+              ((symbol-function 'b4x-nav--project-b4xlib-candidates)
+               (lambda (_proj) '("B4XFoo"))))
+      (with-temp-buffer
+        (b4x-mode)
+        (insert "F")
+        (let* ((capf (b4x-completion-at-point))
+               (cands (all-completions "" (nth 2 capf))))
+          (should (< (seq-position cands "LocalFoo" #'equal)
+                     (seq-position cands "ProjectFoo" #'equal)
+                     (seq-position cands "CoreFoo" #'equal)
+                     (seq-position cands "LibFoo" #'equal)
+                     (seq-position cands "B4XFoo" #'equal))))))))
+
 (ert-deftest b4x-project/pom-indexing-and-association ()
   (let* ((root (make-temp-file "b4x-pom-" t))
          (platform-dir (expand-file-name "B4J" root))
@@ -763,6 +1016,36 @@
                                     (b4x-nav--b4xlib-symbol-doc proj "DoWork")))
             (should (string-match-p "Utility (b4xlib module)"
                                     (b4x-nav--b4xlib-symbol-doc proj "Utility")))) )
+      (delete-directory root t))))
+
+(ert-deftest b4x-nav/b4xlib-index-disk-cache ()
+  (unless (executable-find "unzip")
+    (ert-skip "unzip not available"))
+  (let* ((root (make-temp-file "b4x-b4xlib-cache-" t))
+         (cache-dir (expand-file-name "cache" root))
+         (lib-file (expand-file-name "DemoLib.b4xlib" root))
+         (b4x-cache-directory cache-dir)
+         (lib (make-b4x-library :name "DemoLib"
+                                :canonical-name "demolib"
+                                :source 'core
+                                :kind 'b4xlib
+                                :path lib-file)))
+    (unwind-protect
+        (progn
+          (b4x-test--write-b4xlib
+           lib-file
+           '(("Utility.bas" . "Public Sub DoWork(Name As String)\nEnd Sub\n")))
+          (let ((index1 (b4x-nav--index-b4xlib lib)))
+            (should (member "DoWork"
+                            (b4x-nav-all-names (b4x-nav-b4xlib-index-symtab index1))))
+            (setq b4x-nav--b4xlib-cache (make-hash-table :test 'equal))
+            (cl-letf (((symbol-function 'b4x-nav--ensure-b4xlib-extracted)
+                       (lambda (&rest _)
+                         (error "disk cache miss"))))
+              (let ((index2 (b4x-nav--index-b4xlib lib)))
+                (should (member "DoWork"
+                                (b4x-nav-all-names
+                                 (b4x-nav-b4xlib-index-symtab index2))))))))
       (delete-directory root t))))
 
 (ert-deftest b4x-nav/eldoc-falls-back-to-b4xlib-doc ()
@@ -1173,3 +1456,85 @@
     (let ((script (b4x--b4a-wait-script)))
       (should (string-match-p (regexp-quote "adb -s emulator-5554 wait-for-device") script))
       (should (string-match-p (regexp-quote "shell getprop sys.boot_completed") script)))))
+
+(ert-deftest b4x-b4a/parse-adb-devices-output ()
+  (let* ((devices (b4x--adb-parse-devices
+                   (mapconcat #'identity
+                              '("List of devices attached"
+                                "emulator-5554 device product:sdk_gphone64_x86_64 model:Pixel_8 device:emu64xa transport_id:1"
+                                "R58M123456A unauthorized usb:1-1 transport_id:2")
+                              "\n")))
+         (first (car devices))
+         (second (cadr devices)))
+    (should (= (length devices) 2))
+    (should (equal (plist-get first :serial) "emulator-5554"))
+    (should (equal (plist-get first :state) "device"))
+    (should (equal (plist-get first :model) "Pixel_8"))
+    (should (string-match-p "Pixel_8" (plist-get first :label)))
+    (should (equal (plist-get second :state) "unauthorized"))))
+
+(ert-deftest b4x-b4a/resolve-serial-auto-selects-sole-ready-device ()
+  (let ((b4x-adb-serial nil)
+        (b4x--adb-last-serial nil))
+    (cl-letf (((symbol-function 'b4x--adb-list-devices)
+               (lambda () (list (list :serial "emulator-5554"
+                                      :state "device"
+                                      :label "emulator-5554 [device]")))))
+      (should (equal (b4x--adb-resolve-serial t) "emulator-5554"))
+      (should (equal b4x--adb-last-serial "emulator-5554")))))
+
+(ert-deftest b4x-b4a/resolve-serial-prompts-when-multiple-ready-devices ()
+  (let ((b4x-adb-serial nil)
+        (b4x--adb-last-serial nil))
+    (cl-letf (((symbol-function 'b4x--adb-list-devices)
+               (lambda () (list (list :serial "emulator-5554" :state "device"
+                                      :label "emulator-5554 [device] Pixel_8")
+                                (list :serial "R58M123456A" :state "device"
+                                      :label "R58M123456A [device] Galaxy"))))
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (caar (last collection)))))
+      (should (equal (b4x--adb-resolve-serial t) "R58M123456A"))
+      (should (equal b4x--adb-last-serial "R58M123456A")))))
+
+(ert-deftest b4x-b4a/logcat-args-use-pid-when-available ()
+  (let ((b4x-b4a-logcat-fallback-specs '("B4A:V" "*:S")))
+    (cl-letf (((symbol-function 'b4x--b4a-build-package)
+               (lambda (_proj) "com.example.demo"))
+              ((symbol-function 'b4x--b4a-pidof)
+               (lambda (_pkg &optional _serial) "4242")))
+      (should (equal (b4x--b4a-logcat-args (make-b4x-project) "emulator-5554")
+                     '("-s" "emulator-5554" "logcat" "--pid=4242"))))))
+
+(ert-deftest b4x-b4a/logcat-args-fallback-to-tag-filter-when-pid-missing ()
+  (let ((b4x-b4a-logcat-fallback-specs '("B4A:V" "AndroidRuntime:E" "*:S")))
+    (cl-letf (((symbol-function 'b4x--b4a-build-package)
+               (lambda (_proj) "com.example.demo"))
+              ((symbol-function 'b4x--b4a-pidof)
+               (lambda (_pkg &optional _serial) nil)))
+      (should (equal (b4x--b4a-logcat-args (make-b4x-project) "emulator-5554")
+                     '("-s" "emulator-5554" "logcat" "B4A:V" "AndroidRuntime:E" "*:S"))))))
+
+(ert-deftest b4x-b4a/restart-command-chains-force-stop-and-launch ()
+  (let ((cmd (b4x--b4a-restart-command "com.example.demo" "emulator-5554")))
+    (should (string-match-p (regexp-quote "adb -s emulator-5554 shell am force-stop com.example.demo") cmd))
+    (should (string-match-p (regexp-quote "&& adb -s emulator-5554 shell monkey -p com.example.demo") cmd))))
+
+(ert-deftest b4x-b4a/uninstall-command-targets-package ()
+  (should (equal (b4x--b4a-uninstall-command "com.example.demo" "emulator-5554")
+                 "adb -s emulator-5554 uninstall com.example.demo")))
+
+(ert-deftest b4x-project/birthday-reminder-b4a-model ()
+  (b4x-test-skip-unless b4x-test--birthday-reminder-b4a
+    (let* ((proj (b4x-load-project b4x-test--birthday-reminder-b4a))
+           (layouts (b4x-project-layout-files proj))
+           (modules (b4x-project-modules proj)))
+      (should (eq (b4x-project-platform proj) 'b4a))
+      (should (equal (b4x--b4a-build-package proj) "com.leafecodes.birthdayreminder"))
+      (should (= (length (b4x-project-libraries proj)) 7))
+      (should (= (length layouts) 5))
+      (should (assoc "mainpage" layouts))
+      (should (member (expand-file-name "~/dev/B4XProj/B4X-Birthday-Reminder/B4A/Starter.bas") modules))
+      (should (member (expand-file-name "~/dev/B4XProj/B4X-Birthday-Reminder/B4XMainPage.bas") modules))
+      (should (member (expand-file-name "~/dev/B4XProj/B4X-Birthday-Reminder/moAdd.bas") modules))
+      (should (member (expand-file-name "~/dev/B4XProj/B4X-Birthday-Reminder/moSingle.bas") modules)))))
